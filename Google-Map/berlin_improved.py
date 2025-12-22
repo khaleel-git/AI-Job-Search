@@ -147,7 +147,7 @@ options.add_argument("--ignore-ssl-errors")
 options.add_argument("--allow-insecure-localhost")
 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
 
-driver.get("https://www.google.com/maps/search/restaurants+in+kreuzberg+berlin/@52.4968168,13.3920245,14z/data=!3m1!4b1?entry=ttu&g_ep=EgoyMDI1MDgxMC4wIKXMDSoASAFQAw%3D%3D")
+driver.get("https://www.google.com/maps/search/software+companies+in+Mitte+Berlin/@52.5196802,13.356995,13z/data=!3m1!4b1?entry=ttu&g_ep=EgoyMDI1MTIwOS4wIKXMDSoKLDEwMDc5MjA3MUgBUAM%3D")
 # Main Logic .......................................
 try:
     tracked_emails = load_tracked_set("tracked_emails.txt")
@@ -155,13 +155,12 @@ try:
     # Accept cookies
     try: # only german cookies
         accept_btn = wait(driver, 10).until(
-            EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Alle akzeptieren')]"))
+            EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Alle akzeptieren') or contains(., 'Accept all')]"))
         )
         accept_btn.click()
         print("✅ Cookies accepted")
     except:
         print("⚠️ No cookie popup found")
-
     # Scrollable results container
     scrollable_div = wait(driver, 10).until(
         EC.presence_of_element_located((By.XPATH, "//div[@role='feed']"))
