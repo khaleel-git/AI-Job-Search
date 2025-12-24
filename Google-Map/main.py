@@ -39,7 +39,7 @@ def get_final_url_via_selenium(redirect_url):
     try:
         # Create a temporary headless Selenium session
         temp_options = Options()
-        temp_options.add_argument("--headless")
+        # temp_options.add_argument("--headless")
         temp_options.add_argument("--no-sandbox")
         temp_options.add_argument("--disable-gpu")
         temp_driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=temp_options)
@@ -62,7 +62,7 @@ def fetch_emails(url):
     try:
         # --- Selenium setup ---
         temp_options = Options()
-        temp_options.add_argument("--headless")
+        # temp_options.add_argument("--headless")
         temp_options.add_argument("--no-sandbox")
         temp_options.add_argument("--disable-gpu")
         temp_driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=temp_options)
@@ -147,7 +147,7 @@ options.add_argument("--ignore-ssl-errors")
 options.add_argument("--allow-insecure-localhost")
 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
 
-driver.get("https://www.google.com/maps/search/software+companies+in+Mitte+Berlin/@52.5196802,13.356995,13z/data=!3m1!4b1?entry=ttu&g_ep=EgoyMDI1MTIwOS4wIKXMDSoKLDEwMDc5MjA3MUgBUAM%3D")
+driver.get("https://www.google.com/maps/search/software+companies+in+Kreuzberg+Berlin/@52.5055479,13.3725776,13z/data=!3m1!4b1?entry=ttu&g_ep=EgoyMDI1MTIwOS4wIKXMDSoASAFQAw%3D%3D")
 # Main Logic .......................................
 try:
     tracked_emails = load_tracked_set("tracked_emails.txt")
