@@ -148,7 +148,7 @@ options.add_argument("--ignore-ssl-errors")
 options.add_argument("--allow-insecure-localhost")
 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
 
-driver.get("https://www.google.com/maps/search/software+companies+in+Prenzlauer+Berg+Berlin/@52.5340891,13.3767673,14z/data=!3m1!4b1?entry=ttu&g_ep=EgoyMDI1MTIwOS4wIKXMDSoKLDEwMDc5MjA3MUgBUAM%3D")
+driver.get("https://www.google.com/maps/search/software+company+in+Charlottenburg,+Berlin-Charlottenburg-Wilmersdorf/@52.5074107,13.292474,14z/data=!3m1!4b1?entry=ttu&g_ep=EgoyMDI1MTIwOS4wIKXMDSoKLDEwMDc5MjA3MUgBUAM%3D")
 # Main Logic .......................................
 try:
     tracked_emails = load_tracked_set("tracked_emails.txt")

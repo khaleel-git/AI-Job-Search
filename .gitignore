@@ -32,3 +32,6 @@ Thumbs.db
 # IDE-specific files
 .vscode/
 .idea/
+
+# Skip .txt files
+*.txt
