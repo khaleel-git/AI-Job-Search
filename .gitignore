@@ -1,37 +1,38 @@
-# Environment files
-*.env
-.env
+# Ignore everything by default
+*
 
-# CSV files
+# Allow directory traversal so allowlist patterns can work
+!*/
+
+# Keep source/docs and gitignore tracked
+!*.py
+!*.md
+!.gitignore
+
+# Explicitly ignore sensitive/config/token files
 *.csv
+*.json
+token.json
+credentials.json
+.env
+.env.*
+*.env
 
-# Python cache files
+# Ignore environment folders/data
+venv/
+env/
+.venv/
+
+# Ignore Chrome profile/session data
+chrome_linkedin_profile/
+**/chrome_linkedin_profile/
+
+# Python cache artifacts
 __pycache__/
 *.py[cod]
 
-# Jupyter Notebook checkpoints
-.ipynb_checkpoints/
-
-# Logs
-*.log
-
-# Virtual environments
-venv/
-.env/
-
-# System files
+# Common system/IDE noise
 .DS_Store
 Thumbs.db
-
-# Large files or archives
-*.zip
-*.tar.gz
-*.rar
-*.7z
-
-# IDE-specific files
 .vscode/
 .idea/
-
-# Skip .txt files
-*.txt
