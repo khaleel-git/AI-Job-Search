@@ -1,0 +1,2 @@
+selenium
+google-auth-oauthlib
