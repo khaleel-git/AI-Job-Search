@@ -2,6 +2,7 @@ import csv
 import time
 import sys
 import os
+import re
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 from selenium import webdriver
@@ -58,7 +59,7 @@ DEVOPS_SEARCH_KEYWORDS = [
     "Working Student Kubernetes",
     "Working Student Terraform",
     "Working Student Automation Engineer",
-    "Working Student Monitoring",
+    "Working Student Monitoring"
 ]
 
 DATA_SEARCH_KEYWORDS = [
@@ -94,7 +95,7 @@ DATA_SEARCH_KEYWORDS = [
     "Working Student NLP",
     "Working Student MLOps",
     "Working Student Business Intelligence",
-    "Working Student BI",
+    "Working Student BI"
 ]
 
 def unique_keywords(keywords):
@@ -128,6 +129,8 @@ TIME_FILTER_LABEL = "Past 24 Hours"
 STRICT_GERMANY_LOCATION = True
 WAIT_SECONDS = 15
 MAX_PAGES_PER_KEYWORD = 3
+RETENTION_HOURS = 24
+SCRAPED_DATE_FORMAT = "%Y-%m-%d %H:%M"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_FIELDNAMES = [
     "Scraped Date",
@@ -136,7 +139,6 @@ OUTPUT_FIELDNAMES = [
     "Job Title",
     "Company",
     "Location",
-    "Job Match",
     "Apply Link",
     "Relevance",
 ]
@@ -239,13 +241,11 @@ IT_RELEVANT_TITLE_PHRASES = (
     "quality assurance",
     "testing",
     "automation",
-    "it",
     "it-engineering",
     "it engineering",
     "systemintegration",
     "system integration",
     "system engineer",
-    "api",
     "api-management",
     "api management",
     "cloud",
@@ -286,6 +286,15 @@ IT_RELEVANT_TITLE_PHRASES = (
     "ci cd",
 )
 
+IT_RELEVANT_WORD_TOKENS = (
+    "it",
+    "ai",
+    "ml",
+    "qa",
+    "api",
+    "sre",
+)
+
 NON_IT_TITLE_PHRASES = (
     "hr",
     "human resources",
@@ -313,6 +322,10 @@ NON_IT_TITLE_PHRASES = (
     "bauingenieur",
     "maschinenbau",
 )
+
+
+def contains_whole_word(text, token):
+    return bool(re.search(rf"\b{re.escape(token)}\b", text))
 
 
 def normalize_geo_text(text):
@@ -358,28 +371,34 @@ def is_it_related(title, keyword=""):
     if any(phrase in title_normalized for phrase in IT_RELEVANT_TITLE_PHRASES):
         return "yes"
 
+    if any(contains_whole_word(title_normalized, token) for token in IT_RELEVANT_WORD_TOKENS):
+        return "yes"
+
     # Fallback for generic titles from IT-focused keywords.
     keyword_signals = (
         "data",
         "devops",
         "mlops",
         "machine learning",
-        "ai",
         "software",
         "developer",
         "engineering",
         "programming",
         "cloud",
-        "it",
         "site reliability",
-        "sre",
         "platform engineer",
         "cloud engineer",
         "kubernetes",
         "terraform",
     )
-    if any(signal in keyword_normalized for signal in keyword_signals):
-        if any(token in title_normalized for token in ("engineering", "engineer", "developer", "software", "platform", "cloud", "automation", "analytics", "data", "ml", "ai", "it", "qa", "testing")):
+    keyword_word_signals = ("it", "ai", "sre")
+    keyword_has_it_signal = any(signal in keyword_normalized for signal in keyword_signals) or any(
+        contains_whole_word(keyword_normalized, signal) for signal in keyword_word_signals
+    )
+    if keyword_has_it_signal:
+        if any(token in title_normalized for token in ("engineering", "engineer", "developer", "software", "platform", "cloud", "automation", "analytics", "data", "testing")):
+            return "yes"
+        if any(contains_whole_word(title_normalized, token) for token in IT_RELEVANT_WORD_TOKENS):
             return "yes"
 
     return "no"
@@ -406,66 +425,6 @@ def is_germany_location(location_text):
         return True
 
     return False
-
-
-def extract_job_match_level(driver):
-    """Extract LinkedIn Premium job match level: high/medium/low/generating/unknown."""
-    try:
-        WebDriverWait(driver, 2).until(
-            EC.presence_of_element_located(
-                (By.XPATH, "//div[contains(@class,'job-details-fit-level-card')] | //h2[contains(., 'Job match is')]")
-            )
-        )
-    except TimeoutException:
-        pass
-
-    # 1) Most precise: the highlighted level span inside the Premium fit card header.
-    precise_level_paths = [
-        "//div[contains(@class,'job-details-fit-level-card')]//h2//span[contains(@class,'tvm__text') and normalize-space()]",
-        "//div[contains(@class,'job-details-fit-level-card')]//h2//strong",
-        "//h2[contains(normalize-space(.), 'Job match is')]",
-    ]
-
-    for xpath in precise_level_paths:
-        try:
-            text = (driver.find_element(By.XPATH, xpath).text or "").strip().lower()
-            if "currently being generated" in text or "check back soon" in text:
-                return "generating"
-            if "high" in text:
-                return "high"
-            if "medium" in text:
-                return "medium"
-            if "low" in text:
-                return "low"
-        except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
-            continue
-
-    # 2) Visual fallback: LinkedIn animation class encodes fit quality.
-    class_checks = [
-        ("//span[contains(@class,'job-details-fit-level-card__animation-light-good') or contains(@class,'job-details-fit-level-card__animation-good')]", "high"),
-        ("//span[contains(@class,'job-details-fit-level-card__animation-light-medium') or contains(@class,'job-details-fit-level-card__animation-medium')]", "medium"),
-        ("//span[contains(@class,'job-details-fit-level-card__animation-light-low') or contains(@class,'job-details-fit-level-card__animation-low') or contains(@class,'job-details-fit-level-card__animation-light-poor') or contains(@class,'job-details-fit-level-card__animation-poor')]", "low"),
-    ]
-    for xpath, level in class_checks:
-        try:
-            if driver.find_elements(By.XPATH, xpath):
-                return level
-        except (StaleElementReferenceException, WebDriverException):
-            continue
-
-    # Explicit fallback when Premium card says match is not ready yet.
-    generating_paths = [
-        "//div[contains(@class,'job-details-fit-level-card')]//h2[contains(normalize-space(.), 'currently being generated')]",
-        "//div[contains(@class,'job-details-fit-level-card')]//h3[contains(normalize-space(.), 'Check back soon')]",
-    ]
-    for xpath in generating_paths:
-        try:
-            if driver.find_elements(By.XPATH, xpath):
-                return "generating"
-        except (StaleElementReferenceException, WebDriverException):
-            continue
-
-    return "unknown"
 
 
 def build_search_url(keyword):
@@ -569,37 +528,68 @@ def load_all_jobs_for_keyword(driver, wait):
     return driver.find_elements(By.CSS_SELECTOR, JOB_CARD_SELECTOR)
 
 
-def load_existing_jobs(output_filename):
+def parse_scraped_date(value):
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        dt = datetime.strptime(text, SCRAPED_DATE_FORMAT)
+        return dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def is_within_retention(row, now_utc):
+    scraped_dt = parse_scraped_date(row.get("Scraped Date", ""))
+    if scraped_dt is None:
+        return False
+    age_seconds = (now_utc - scraped_dt).total_seconds()
+    return age_seconds <= RETENTION_HOURS * 3600
+
+
+def load_existing_jobs(output_filenames, now_utc):
     existing_jobs = []
     seen_links = set()
-    seen_fallback_keys = set()
+    expired_count = 0
 
-    if not os.path.exists(output_filename):
-        return existing_jobs, seen_links, seen_fallback_keys
+    if isinstance(output_filenames, str):
+        output_filenames = [output_filenames]
 
-    with open(output_filename, 'r', encoding='utf-8-sig') as infile:
-        reader = csv.DictReader(infile)
-        for row in reader:
-            if "Time Filter" not in row:
-                row["Time Filter"] = "Unknown"
-            if "Job Match" not in row:
-                row["Job Match"] = "unknown"
-            if "Relevance" not in row:
-                row["Relevance"] = is_it_related(row.get("Job Title", ""), row.get("Keyword", ""))
-            existing_jobs.append(row)
+    for output_filename in output_filenames:
+        if not os.path.exists(output_filename):
+            continue
 
-            apply_link = (row.get("Apply Link", "") or "").strip()
-            if apply_link:
+        with open(output_filename, 'r', encoding='utf-8-sig') as infile:
+            reader = csv.DictReader(infile)
+            for row in reader:
+                if "Time Filter" not in row:
+                    row["Time Filter"] = "Unknown"
+                if "Relevance" not in row:
+                    row["Relevance"] = is_it_related(row.get("Job Title", ""), row.get("Keyword", ""))
+
+                if not is_within_retention(row, now_utc):
+                    expired_count += 1
+                    continue
+
+                apply_link = (row.get("Apply Link", "") or "").strip()
+                if not apply_link:
+                    continue
+
+                if apply_link in seen_links:
+                    continue
+
+                existing_jobs.append(row)
+
                 seen_links.add(apply_link)
 
-            fallback_key = (
-                row.get("Job Title", "").strip().lower(),
-                row.get("Company", "").strip().lower(),
-                row.get("Location", "").strip().lower(),
-            )
-            seen_fallback_keys.add(fallback_key)
+    return existing_jobs, seen_links, expired_count
 
-    return existing_jobs, seen_links, seen_fallback_keys
+
+def save_jobs_csv(output_filename, jobs):
+    with open(output_filename, 'w', encoding='utf-8-sig', newline='') as outfile:
+        writer = csv.DictWriter(outfile, fieldnames=OUTPUT_FIELDNAMES)
+        writer.writeheader()
+        writer.writerows([{key: job.get(key, "") for key in OUTPUT_FIELDNAMES} for job in jobs])
 
 def upload_to_google_sheets(fresh_jobs, tab_name):
     """Handles the connection and uploading of new data to Google Sheets via User OAuth."""
@@ -644,8 +634,8 @@ def upload_to_google_sheets(fresh_jobs, tab_name):
             worksheet = workbook.worksheet(tab_name)
         except gspread.exceptions.WorksheetNotFound:
             print(f"   Creating '{tab_name}' because it didn't exist...")
-            worksheet = workbook.add_worksheet(title=tab_name, rows="1000", cols="10")
-            worksheet.append_row(["Scraped Date", "Time Filter", "Keyword", "Job Title", "Company", "Location", "Job Match", "Apply Link", "Relevance"])
+            worksheet = workbook.add_worksheet(title=tab_name, rows="1000", cols="9")
+            worksheet.append_row(["Scraped Date", "Time Filter", "Keyword", "Job Title", "Company", "Location", "Apply Link", "Relevance"])
 
         # Convert dictionaries to a flat list of lists for GSpread
         rows_to_append = []
@@ -657,7 +647,6 @@ def upload_to_google_sheets(fresh_jobs, tab_name):
                 job["Job Title"],
                 job["Company"],
                 job["Location"],
-                job["Job Match"],
                 job["Apply Link"],
                 job.get("Relevance", "no")
             ])
@@ -674,15 +663,19 @@ def upload_to_google_sheets(fresh_jobs, tab_name):
 
 def scrape_linkedin_jobs():
     print("🚀 Launching Chrome with Persistent Profile...\n")
-    run_timestamp_display = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+    now_utc = datetime.now(timezone.utc)
+    run_timestamp_display = now_utc.strftime(SCRAPED_DATE_FORMAT)
     run_timestamp_slug = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M")
     google_tab_name = f"Werkstudent_Jobs_{run_timestamp_slug}"
     output_filename = os.path.join(BASE_DIR, "Live_Werkstudent_Jobs.csv")
+    non_relevant_output_filename = os.path.join(BASE_DIR, "Live_Werkstudent_Jobs_Non_Relevant.csv")
 
-    existing_jobs, seen_links, seen_fallback_keys = load_existing_jobs(output_filename)
+    existing_jobs, seen_links, expired_count = load_existing_jobs([
+        output_filename,
+        non_relevant_output_filename,
+    ], now_utc)
     fresh_jobs = []
     run_seen_links = set()
-    run_seen_fallback_keys = set()
     
     driver = None
 
@@ -735,38 +728,21 @@ def scrape_linkedin_jobs():
                         if STRICT_GERMANY_LOCATION and not is_germany_location(location):
                             continue
 
-                        if should_keep_title(title):
-                            # Click/read Premium match only for relevant titles to reduce run time.
-                            job_match = "unknown"
-                            try:
-                                driver.execute_script("arguments[0].click();", card)
-                                time.sleep(0.8)
-                                job_match = extract_job_match_level(driver)
-                            except (StaleElementReferenceException, WebDriverException):
-                                pass
+                        if not should_keep_title(title):
+                            continue
+                        if clean_link in seen_links or clean_link in run_seen_links:
+                            continue
 
-                            fallback_key = (
-                                title.strip().lower(),
-                                company.strip().lower(),
-                                location.strip().lower(),
-                            )
-                            if clean_link in seen_links or clean_link in run_seen_links:
-                                continue
-                            if fallback_key in seen_fallback_keys or fallback_key in run_seen_fallback_keys:
-                                continue
-
-                            fresh_jobs.append({
-                                "Scraped Date": run_timestamp_display,
-                                "Time Filter": TIME_FILTER_LABEL,
-                                "Keyword": keyword,
-                                "Job Title": title,
-                                "Company": company,
-                                "Location": location,
-                                "Job Match": job_match,
-                                "Apply Link": clean_link
-                            })
-                            run_seen_links.add(clean_link)
-                            run_seen_fallback_keys.add(fallback_key)
+                        fresh_jobs.append({
+                            "Scraped Date": run_timestamp_display,
+                            "Time Filter": TIME_FILTER_LABEL,
+                            "Keyword": keyword,
+                            "Job Title": title,
+                            "Company": company,
+                            "Location": location,
+                            "Apply Link": clean_link,
+                        })
+                        run_seen_links.add(clean_link)
                     except (NoSuchElementException, StaleElementReferenceException, WebDriverException) as e:
                         print(f"   Skipping card {idx} for '{keyword}' due to parse error: {e}")
 
@@ -781,23 +757,24 @@ def scrape_linkedin_jobs():
     final_jobs = fresh_jobs + existing_jobs
     final_jobs_with_relevance = with_relevance(final_jobs)
     relevant_jobs_only = [job for job in final_jobs_with_relevance if job.get("Relevance") == "yes"]
+    non_relevant_jobs_only = [job for job in final_jobs_with_relevance if job.get("Relevance") == "no"]
 
     print(f"💾 Found {len(fresh_jobs)} NEW jobs! Saving locally to {output_filename}...")
+    print(f"🧹 Expired rows removed (> {RETENTION_HOURS}h): {expired_count}")
     print(f"🎯 Relevant IT jobs after filtering: {len(relevant_jobs_only)} / {len(final_jobs_with_relevance)}")
+    print(f"🗂️ Non-relevant jobs saved separately: {len(non_relevant_jobs_only)}")
     
+    save_jobs_csv(output_filename, relevant_jobs_only)
+
     if relevant_jobs_only:
-        # Save to local CSV file
-        with open(output_filename, 'w', encoding='utf-8-sig', newline='') as outfile:
-            writer = csv.DictWriter(outfile, fieldnames=OUTPUT_FIELDNAMES)
-            writer.writeheader()
-            writer.writerows(relevant_jobs_only)
-            
-        # Push the NEW jobs to Google Sheets
+        # Push only NEW relevant jobs to Google Sheets.
         fresh_jobs_with_relevance = with_relevance(fresh_jobs)
         fresh_relevant_jobs = [job for job in fresh_jobs_with_relevance if job.get("Relevance") == "yes"]
         upload_to_google_sheets(fresh_relevant_jobs, google_tab_name)
     else:
-        print("⚠️ No IT-related jobs found to save.")
+        print("⚠️ No IT-related jobs found in this run.")
+
+    save_jobs_csv(non_relevant_output_filename, non_relevant_jobs_only)
 
 if __name__ == '__main__':
     scrape_linkedin_jobs()
