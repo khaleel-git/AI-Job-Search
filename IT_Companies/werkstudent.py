@@ -3,6 +3,7 @@ import time
 import sys
 import os
 import re
+import random
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 from selenium import webdriver
@@ -28,42 +29,47 @@ except ImportError:
 # Change only this value before running: "data", "devops", or "both"
 RUN_MODE = "both"  # Options: "devops", "data", "both"
 
+# ⚠️ DEVOPS_SEARCH_KEYWORDS: TESTING STATE
+# Currently limited to 1 keyword for initial testing.
+# Uncomment additional keywords below as needed to expand search scope.
 DEVOPS_SEARCH_KEYWORDS = [
     # --- Werkstudent (German) ---
     "Werkstudent DevOps",
+    "Werkstudent DevOps Cloud",
     "Werkstudent Platform Engineer",
     "Werkstudent Platform Engineering",
     "Werkstudent Infrastructure",
     "Werkstudent Cloud",
-    "Werkstudent Cloud Engineer",
-    "Werkstudent Site Reliability Engineer",
-    "Werkstudent SRE",
-    "Werkstudent CI/CD",
-    "Werkstudent Kubernetes",
-    "Werkstudent Terraform",
-    "Werkstudent Automation Engineer",
-    "Werkstudent Monitoring",
-    # --- Werkstudentin (German feminine form) ---
-    "Werkstudentin DevOps",
-    "Werkstudentin Cloud",
-    # --- Working Student (English) ---
-    "Working Student DevOps",
-    "Working Student Platform Engineer",
-    "Working Student Platform Engineering",
-    "Working Student Infrastructure",
-    "Working Student Cloud",
-    "Working Student Cloud Engineer",
-    "Working Student Site Reliability Engineer",
-    "Working Student SRE",
-    "Working Student CI/CD",
-    "Working Student Kubernetes",
-    "Working Student Terraform",
-    "Working Student Automation Engineer",
-    "Working Student Monitoring"
+    # "Werkstudent Cloud Engineer",
+    # "Werkstudent Site Reliability Engineer",
+    # "Werkstudent SRE",
+    # "Werkstudent CI/CD",
+    # "Werkstudent Kubernetes",
+    # "Werkstudent Terraform",
+    # "Werkstudent Automation Engineer",
+    # "Werkstudent Monitoring",
+    # # --- Werkstudentin (German feminine form) ---
+    # "Werkstudentin DevOps",
+    # "Werkstudentin Cloud",
+    # # --- Working Student (English) ---
+    # "Working Student DevOps",
+    # "Working Student Platform Engineer",
+    # "Working Student Platform Engineering",
+    # "Working Student Infrastructure",
+    # "Working Student Cloud",
+    # "Working Student Cloud Engineer",
+    # "Working Student Site Reliability Engineer",
+    # "Working Student SRE",
+    # "Working Student CI/CD",
+    # "Working Student Kubernetes",
+    # "Working Student Terraform",
+    # "Working Student Automation Engineer",
+    # "Working Student Monitoring"
 ]
 
 DATA_SEARCH_KEYWORDS = [
     # --- Werkstudent (German) ---
+    "Werkstudent Python AI",
     "Werkstudent Data Engineering",
     "Werkstudent Data Engineer",
     "Werkstudent Data Analyst",
@@ -74,28 +80,29 @@ DATA_SEARCH_KEYWORDS = [
     "Werkstudent KI",
     "Werkstudent AI",
     "Werkstudent NLP",
-    "Werkstudent MLOps",
-    "Werkstudent Business Intelligence",
-    "Werkstudent BI",
-    "Werkstudent Datenanalyse",
-    "Werkstudent Daten",
-    # --- Werkstudentin (German feminine form) ---
-    "Werkstudentin Data",
-    "Werkstudentin Machine Learning",
-    # --- Working Student (English) ---
-    "Working Student Data Engineering",
-    "Working Student Data Engineer",
-    "Working Student Data Analyst",
-    "Working Student Data Science",
-    "Working Student Analytics",
-    "Working Student Machine Learning",
-    "Working Student ML",
-    "Working Student KI",
-    "Working Student AI",
-    "Working Student NLP",
-    "Working Student MLOps",
-    "Working Student Business Intelligence",
-    "Working Student BI"
+    # "Werkstudent MLOps",
+    # "Werkstudent Business Intelligence",
+    # "Werkstudent BI",
+    # "Werkstudent Datenanalyse",
+    # "Werkstudent Daten",
+    # # --- Werkstudentin (German feminine form) ---
+    # "Werkstudentin Data",
+    # "Werkstudentin Machine Learning",
+    # # --- Working Student (English) ---
+    # "Working Student Data Engineer",
+    # "Working Student Data Engineering",
+    # "Working Student Data Engineer",
+    # "Working Student Data Analyst",
+    # "Working Student Data Science",
+    # "Working Student Analytics",
+    # "Working Student Machine Learning",
+    # "Working Student ML",
+    # "Working Student KI",
+    # "Working Student AI",
+    # "Working Student NLP",
+    # "Working Student MLOps",
+    # "Working Student Business Intelligence",
+    # "Working Student BI"
 ]
 
 def unique_keywords(keywords):
@@ -128,9 +135,10 @@ TIME_FILTER = "r86400"
 TIME_FILTER_LABEL = "Past 24 Hours"
 STRICT_GERMANY_LOCATION = True
 WAIT_SECONDS = 15
-MAX_PAGES_PER_KEYWORD = 3
+MAX_PAGES_PER_KEYWORD = 1  # Quality over quantity: 1 page captures most-relevant (fresh) jobs + faster execution
 RETENTION_HOURS = 24
 SCRAPED_DATE_FORMAT = "%Y-%m-%d %H:%M"
+DEBUG_MODE = True
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_FIELDNAMES = [
     "Scraped Date",
@@ -159,6 +167,12 @@ COMPANY_SELECTOR = (
 )
 LOCATION_SELECTOR = "span.job-search-card__location, ul.job-card-container__metadata-wrapper li"
 LINK_SELECTOR = "a.base-card__full-link, a.job-card-list__title, a.job-card-container__link"
+PAGINATION_CONTAINER_SELECTOR = "div.jobs-search-pagination"
+
+
+def debug_log(message):
+    if DEBUG_MODE:
+        print(f"[DEBUG] {message}")
 
 TITLE_MATCH_TOKENS = ("werkstudent", "werkstudentin", "working student", "student worker", "intern")
 GERMANY_LOCATION_TOKENS = (
@@ -442,61 +456,226 @@ def build_search_url(keyword):
 def click_jobs_page_number(driver, page_number):
     """Click an explicit jobs pagination button by number (e.g., 2, 3)."""
     page_text = str(page_number)
-    xpaths = [
-        f"//button[.//span[normalize-space()='{page_text}']]",
-        f"//li[contains(@class,'artdeco-pagination__indicator')]//button[.//span[normalize-space()='{page_text}']]",
-        f"//span[normalize-space()='{page_text}']/ancestor::button[1]",
+    selectors = [
+        f"{PAGINATION_CONTAINER_SELECTOR} button.jobs-search-pagination__indicator-button[aria-label='Page {page_text}']",
+        f"{PAGINATION_CONTAINER_SELECTOR} li.jobs-search-pagination__indicator button[aria-label='Page {page_text}']",
     ]
-    for xpath in xpaths:
+    xpaths = [
+        f"//div[contains(@class,'jobs-search-pagination')]//button[@aria-label='Page {page_text}']",
+    ]
+
+    for selector in selectors:
         try:
-            btn = WebDriverWait(driver, 4).until(EC.element_to_be_clickable((By.XPATH, xpath)))
+            btn = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.CSS_SELECTOR, selector)))
             driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
             time.sleep(0.2)
             driver.execute_script("arguments[0].click();", btn)
+            debug_log(f"Clicked page {page_number} using selector: {selector}")
             return True
         except TimeoutException:
             continue
         except WebDriverException:
             continue
+
+    for xpath in xpaths:
+        try:
+            btn = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.XPATH, xpath)))
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
+            time.sleep(0.2)
+            driver.execute_script("arguments[0].click();", btn)
+            debug_log(f"Clicked page {page_number} using xpath: {xpath}")
+            return True
+        except TimeoutException:
+            continue
+        except WebDriverException:
+            continue
+
+    debug_log(f"Failed to click page {page_number}")
     return False
 
 
 def click_jobs_next_page(driver):
     """Click pagination Next button."""
-    xpaths = [
-        "//button[.//span[normalize-space()='Next']]",
-        "//span[normalize-space()='Next']/ancestor::button[1]",
+    selectors = [
+        f"{PAGINATION_CONTAINER_SELECTOR} button.jobs-search-pagination__button--next",
+        f"{PAGINATION_CONTAINER_SELECTOR} button[aria-label='View next page']",
     ]
-    for xpath in xpaths:
+    xpaths = [
+        "//div[contains(@class,'jobs-search-pagination')]//button[contains(@class,'jobs-search-pagination__button--next')]",
+        "//button[@aria-label='View next page']",
+    ]
+
+    for selector in selectors:
         try:
-            btn = WebDriverWait(driver, 4).until(EC.element_to_be_clickable((By.XPATH, xpath)))
+            btn = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.CSS_SELECTOR, selector)))
+            if (btn.get_attribute("disabled") or "").strip().lower() in ("true", "disabled"):
+                debug_log("Next button is disabled")
+                return False
             driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
             time.sleep(0.2)
             driver.execute_script("arguments[0].click();", btn)
+            debug_log(f"Clicked next using selector: {selector}")
             return True
         except TimeoutException:
             continue
         except WebDriverException:
             continue
+
+    for xpath in xpaths:
+        try:
+            btn = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.XPATH, xpath)))
+            if (btn.get_attribute("disabled") or "").strip().lower() in ("true", "disabled"):
+                debug_log("Next button is disabled")
+                return False
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
+            time.sleep(0.2)
+            driver.execute_script("arguments[0].click();", btn)
+            debug_log(f"Clicked next using xpath: {xpath}")
+            return True
+        except TimeoutException:
+            continue
+        except WebDriverException:
+            continue
+    debug_log("Failed to click next page button")
     return False
 
 
+def get_current_jobs_page(driver):
+    selectors = [
+        f"{PAGINATION_CONTAINER_SELECTOR} button.jobs-search-pagination__indicator-button--active",
+        f"{PAGINATION_CONTAINER_SELECTOR} button[aria-current='page']",
+    ]
+    for selector in selectors:
+        try:
+            el = driver.find_element(By.CSS_SELECTOR, selector)
+            label = (el.get_attribute("aria-label") or "").strip().lower()
+            match = re.search(r"page\s+(\d+)", label)
+            if match:
+                return int(match.group(1))
+            text = (el.text or "").strip()
+            if text.isdigit():
+                return int(text)
+        except (NoSuchElementException, WebDriverException):
+            continue
+
+    # Fallback: parse "Page X of Y" state text.
+    try:
+        state = driver.find_element(By.CSS_SELECTOR, f"{PAGINATION_CONTAINER_SELECTOR} p.jobs-search-pagination__page-state")
+        text = (state.text or "").strip().lower()
+        match = re.search(r"page\s+(\d+)\s+of\s+(\d+)", text)
+        if match:
+            return int(match.group(1))
+    except (NoSuchElementException, WebDriverException):
+        pass
+
+    return None
+
+
+def get_max_jobs_pages(driver):
+    try:
+        state = driver.find_element(By.CSS_SELECTOR, f"{PAGINATION_CONTAINER_SELECTOR} p.jobs-search-pagination__page-state")
+        text = (state.text or "").strip().lower()
+        match = re.search(r"page\s+\d+\s+of\s+(\d+)", text)
+        if match:
+            return int(match.group(1))
+    except (NoSuchElementException, WebDriverException):
+        pass
+
+    # Fallback: highest numeric page button currently visible.
+    try:
+        buttons = driver.find_elements(By.CSS_SELECTOR, f"{PAGINATION_CONTAINER_SELECTOR} button.jobs-search-pagination__indicator-button")
+        nums = []
+        for btn in buttons:
+            label = (btn.get_attribute("aria-label") or "").strip().lower()
+            m = re.search(r"page\s+(\d+)", label)
+            if m:
+                nums.append(int(m.group(1)))
+        if nums:
+            return max(nums)
+    except WebDriverException:
+        pass
+
+    return 1
+
+
+def ensure_pagination_loaded(driver):
+    """LinkedIn pagination often appears only after list pane is scrolled down."""
+    for _ in range(4):
+        scrolled = False
+        for container_selector in (
+            ".scaffold-layout__list",
+            ".jobs-search-results-list",
+            ".jobs-search-results-list__list-container",
+        ):
+            try:
+                container = driver.find_element(By.CSS_SELECTOR, container_selector)
+                driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight;", container)
+                scrolled = True
+                break
+            except (NoSuchElementException, WebDriverException):
+                continue
+
+        if not scrolled:
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+
+        try:
+            WebDriverWait(driver, 2).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, f"{PAGINATION_CONTAINER_SELECTOR} p.jobs-search-pagination__page-state"))
+            )
+            return True
+        except TimeoutException:
+            time.sleep(0.6)
+
+    return False
+
+
+def get_results_summary_text(driver):
+    selectors = [
+        ".jobs-search-results-list__title-heading small span",
+        "#results-list__title",
+    ]
+    for selector in selectors:
+        try:
+            text = (driver.find_element(By.CSS_SELECTOR, selector).text or "").strip()
+            if text:
+                return text
+        except (NoSuchElementException, WebDriverException):
+            continue
+    return ""
+
+
 def move_to_jobs_page(driver, page_number):
-    """Move to target page (1..N) using page number first, then Next as fallback."""
+    """Move to target page using page number first, then Next fallback until reached."""
     if page_number <= 1:
         return True
 
     if click_jobs_page_number(driver, page_number):
-        time.sleep(2)
-        return True
+        try:
+            WebDriverWait(driver, 6).until(lambda d: get_current_jobs_page(d) == page_number)
+            debug_log(f"Reached page {page_number} via direct click")
+            return True
+        except TimeoutException:
+            time.sleep(1.5)
+            if get_current_jobs_page(driver) == page_number:
+                debug_log(f"Reached page {page_number} after wait fallback")
+                return True
 
-    # Fallback: Next once for page 2 and once more for page 3.
-    steps = 1 if page_number == 2 else 2
-    for _ in range(steps):
+    current = get_current_jobs_page(driver) or 1
+    debug_log(f"Direct click failed, using Next fallback from page {current} to {page_number}")
+    while current < page_number:
         if not click_jobs_next_page(driver):
             return False
-        time.sleep(2)
-    return True
+        try:
+            WebDriverWait(driver, 6).until(lambda d: (get_current_jobs_page(d) or 0) > current)
+        except TimeoutException:
+            time.sleep(1.5)
+        new_current = get_current_jobs_page(driver) or current
+        if new_current <= current:
+            debug_log(f"Page did not advance (still {new_current})")
+            return False
+        debug_log(f"Advanced from page {current} to {new_current}")
+        current = new_current
+    return current == page_number
 
 
 def load_all_jobs_for_keyword(driver, wait):
@@ -506,10 +685,10 @@ def load_all_jobs_for_keyword(driver, wait):
         return []
 
     print("   Scrolling to load more jobs...")
-    last_count = 0
+    last_count = len(driver.find_elements(By.CSS_SELECTOR, JOB_CARD_SELECTOR))
     stagnant_scrolls = 0
 
-    while stagnant_scrolls < 2:
+    while stagnant_scrolls < 4:
         job_cards = driver.find_elements(By.CSS_SELECTOR, JOB_CARD_SELECTOR)
         current_count = len(job_cards)
         if current_count <= last_count:
@@ -518,12 +697,32 @@ def load_all_jobs_for_keyword(driver, wait):
             stagnant_scrolls = 0
             last_count = current_count
 
-        try:
-            scroll_container = driver.find_element(By.CSS_SELECTOR, ".jobs-search-results-list")
-            driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", scroll_container)
-        except (NoSuchElementException, WebDriverException):
+        scrolled = False
+        for container_selector in (
+            ".scaffold-layout__list",
+            ".jobs-search-results-list",
+            ".jobs-search-results-list__list-container",
+            "div[aria-label='Jobs search'] .scaffold-layout__list",
+        ):
+            try:
+                scroll_container = driver.find_element(By.CSS_SELECTOR, container_selector)
+                driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight;", scroll_container)
+                scrolled = True
+                break
+            except (NoSuchElementException, WebDriverException):
+                continue
+
+        if not scrolled:
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(1.5)
+
+        if job_cards:
+            try:
+                driver.execute_script("arguments[0].scrollIntoView({block: 'end'});", job_cards[-1])
+            except WebDriverException:
+                pass
+
+        debug_log(f"Scroll loop: cards={current_count}, last={last_count}, stagnant={stagnant_scrolls}")
+        time.sleep(0.8)  # Reduced from 2s; LinkedIn typically renders within 500-800ms
 
     return driver.find_elements(By.CSS_SELECTOR, JOB_CARD_SELECTOR)
 
@@ -599,7 +798,7 @@ def upload_to_google_sheets(fresh_jobs, tab_name):
     print("\n☁️ Uploading new jobs to Google Sheets...")
     
     if not GSHEETS_AVAILABLE:
-        print("⚠️ Missing libraries. Please run: pip install gspread google-auth-oauthlib")
+        print("⚠️ Google Sheets upload skipped. Missing libraries: pip install gspread google-auth-oauthlib")
         return
          
     try:
@@ -629,12 +828,12 @@ def upload_to_google_sheets(fresh_jobs, tab_name):
         # Open the workbook
         workbook = client.open_by_key(GOOGLE_SHEET_ID)
         
-        # Find or Create the "live tab"
+        # Find or Create the single "live" tab for all runs
         try:
             worksheet = workbook.worksheet(tab_name)
         except gspread.exceptions.WorksheetNotFound:
-            print(f"   Creating '{tab_name}' because it didn't exist...")
-            worksheet = workbook.add_worksheet(title=tab_name, rows="1000", cols="9")
+            print(f"   Creating '{tab_name}' tab because it didn't exist...")
+            worksheet = workbook.add_worksheet(title=tab_name, rows="10000", cols="9")
             worksheet.append_row(["Scraped Date", "Time Filter", "Keyword", "Job Title", "Company", "Location", "Apply Link", "Relevance"])
 
         # Convert dictionaries to a flat list of lists for GSpread
@@ -666,7 +865,7 @@ def scrape_linkedin_jobs():
     now_utc = datetime.now(timezone.utc)
     run_timestamp_display = now_utc.strftime(SCRAPED_DATE_FORMAT)
     run_timestamp_slug = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M")
-    google_tab_name = f"Werkstudent_Jobs_{run_timestamp_slug}"
+    google_tab_name = "Werkstudent Jobs (Live)"  # Single live tab; appends data with run timestamps
     output_filename = os.path.join(BASE_DIR, "Live_Werkstudent_Jobs.csv")
     non_relevant_output_filename = os.path.join(BASE_DIR, "Live_Werkstudent_Jobs_Non_Relevant.csv")
 
@@ -696,20 +895,45 @@ def scrape_linkedin_jobs():
         #print("3. Once you see your LinkedIn feed, come back here.")
         #input("👉 PRESS [ENTER] HERE IN THE TERMINAL TO START SCRAPING...")
 
-        for keyword in SEARCH_KEYWORDS:
+        for i, keyword in enumerate(SEARCH_KEYWORDS):
+            # Add random jitter BEFORE navigating to mimic human pacing and avoid mechanical bot detection
+            if i > 0:
+                jitter = random.uniform(1.5, 3.5)
+                time.sleep(jitter)
+
             print(f"\n🔍 Searching for: {keyword} ({TIME_FILTER_LABEL})...")
 
             url = build_search_url(keyword)
             driver.get(url)
 
-            for page_num in range(1, MAX_PAGES_PER_KEYWORD + 1):
-                if page_num > 1:
+            # Load page 1 cards first (also triggers lazy list/pagination rendering).
+            try:
+                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, JOB_CARD_SELECTOR)))
+            except TimeoutException:
+                print("   ⚠️ No job cards found on initial page load.")
+                continue
+
+            page1_cards = load_all_jobs_for_keyword(driver, wait)
+            pagination_ready = ensure_pagination_loaded(driver)
+            debug_log(f"Pagination container ready: {pagination_ready}")
+
+            # Determine how many pages are available for this keyword and cap by config.
+            detected_pages = get_max_jobs_pages(driver)
+            total_pages_to_scan = max(1, min(MAX_PAGES_PER_KEYWORD, detected_pages))
+            print(f"   Pagination detected: {detected_pages} pages (scanning up to {total_pages_to_scan}).")
+            debug_log(f"Results summary: {get_results_summary_text(driver)}")
+
+            for page_num in range(1, total_pages_to_scan + 1):
+                if page_num == 1:
+                    job_cards = page1_cards
+                else:
                     moved = move_to_jobs_page(driver, page_num)
                     if not moved:
                         print(f"   ℹ️ Could not move to page {page_num}; stopping pagination for this keyword.")
                         break
+                    job_cards = load_all_jobs_for_keyword(driver, wait)
 
-                job_cards = load_all_jobs_for_keyword(driver, wait)
+                debug_log(f"Now on page state: {get_current_jobs_page(driver)} (target {page_num})")
                 print(f"   Found {len(job_cards)} recent jobs for {keyword} on page {page_num}.")
 
                 for idx, card in enumerate(job_cards, start=1):
