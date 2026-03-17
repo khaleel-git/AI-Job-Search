@@ -129,6 +129,17 @@ STRICT_GERMANY_LOCATION = True
 WAIT_SECONDS = 15
 MAX_PAGES_PER_KEYWORD = 3
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_FIELDNAMES = [
+    "Scraped Date",
+    "Time Filter",
+    "Keyword",
+    "Job Title",
+    "Company",
+    "Location",
+    "Job Match",
+    "Apply Link",
+    "Relevance",
+]
 
 # Google Sheets Configuration
 GOOGLE_SHEET_ID = "1EtJXQmaOu2M51KAQ-KbXF_MiWaVOoVx7oE_xRrMG76o"
@@ -210,6 +221,99 @@ GERMANY_STATE_TOKENS = (
     "thuringen",
 )
 
+IT_RELEVANT_TITLE_PHRASES = (
+    "software",
+    "softwareentwicklung",
+    "software engineer",
+    "software engineering",
+    "software developer",
+    "developer",
+    "development",
+    "programming",
+    "full-stack",
+    "fullstack",
+    "backend",
+    "frontend",
+    "web development",
+    "qa",
+    "quality assurance",
+    "testing",
+    "automation",
+    "it",
+    "it-engineering",
+    "it engineering",
+    "systemintegration",
+    "system integration",
+    "system engineer",
+    "api",
+    "api-management",
+    "api management",
+    "cloud",
+    "infrastructure",
+    "platform",
+    "site reliability",
+    "sre",
+    "devops",
+    "security",
+    "cyber security",
+    "cybersecurity",
+    "identity access",
+    "data",
+    "data engineering",
+    "data engineer",
+    "data analyst",
+    "data science",
+    "data platform",
+    "data warehouse",
+    "business intelligence",
+    "analytics engineering",
+    "datenanalyse",
+    "datenanalyst",
+    "dateningenieur",
+    "datenplattform",
+    "mlops",
+    "machine learning",
+    "devops",
+    "site reliability",
+    "sre",
+    "platform engineer",
+    "platform engineering",
+    "cloud engineer",
+    "infrastructure",
+    "kubernetes",
+    "terraform",
+    "ci/cd",
+    "ci cd",
+)
+
+NON_IT_TITLE_PHRASES = (
+    "hr",
+    "human resources",
+    "people & culture",
+    "people service",
+    "recruiting",
+    "employer branding",
+    "active sourcing",
+    "sales",
+    "telesales",
+    "marketing",
+    "influencer",
+    "campaign",
+    "communication",
+    "customer success",
+    "finance",
+    "faktura",
+    "procurement",
+    "legal",
+    "logistik",
+    "logistics",
+    "asset management",
+    "immobilien",
+    "facility management",
+    "bauingenieur",
+    "maschinenbau",
+)
+
 
 def normalize_geo_text(text):
     normalized = (text or "").strip().lower()
@@ -241,6 +345,53 @@ def first_href(container, selector):
 def should_keep_title(title):
     normalized = title.lower()
     return any(token in normalized for token in TITLE_MATCH_TOKENS)
+
+
+def is_it_related(title, keyword=""):
+    """Return yes/no relevance for IT jobs (programming/devops/data/ml) based on title and keyword."""
+    title_normalized = (title or "").strip().lower()
+    keyword_normalized = (keyword or "").strip().lower()
+
+    if any(phrase in title_normalized for phrase in NON_IT_TITLE_PHRASES):
+        return "no"
+
+    if any(phrase in title_normalized for phrase in IT_RELEVANT_TITLE_PHRASES):
+        return "yes"
+
+    # Fallback for generic titles from IT-focused keywords.
+    keyword_signals = (
+        "data",
+        "devops",
+        "mlops",
+        "machine learning",
+        "ai",
+        "software",
+        "developer",
+        "engineering",
+        "programming",
+        "cloud",
+        "it",
+        "site reliability",
+        "sre",
+        "platform engineer",
+        "cloud engineer",
+        "kubernetes",
+        "terraform",
+    )
+    if any(signal in keyword_normalized for signal in keyword_signals):
+        if any(token in title_normalized for token in ("engineering", "engineer", "developer", "software", "platform", "cloud", "automation", "analytics", "data", "ml", "ai", "it", "qa", "testing")):
+            return "yes"
+
+    return "no"
+
+
+def with_relevance(rows):
+    enriched = []
+    for row in rows:
+        current = dict(row)
+        current["Relevance"] = is_it_related(current.get("Job Title", ""), current.get("Keyword", ""))
+        enriched.append(current)
+    return enriched
 
 
 def is_germany_location(location_text):
@@ -433,6 +584,8 @@ def load_existing_jobs(output_filename):
                 row["Time Filter"] = "Unknown"
             if "Job Match" not in row:
                 row["Job Match"] = "unknown"
+            if "Relevance" not in row:
+                row["Relevance"] = is_it_related(row.get("Job Title", ""), row.get("Keyword", ""))
             existing_jobs.append(row)
 
             apply_link = (row.get("Apply Link", "") or "").strip()
@@ -492,7 +645,7 @@ def upload_to_google_sheets(fresh_jobs, tab_name):
         except gspread.exceptions.WorksheetNotFound:
             print(f"   Creating '{tab_name}' because it didn't exist...")
             worksheet = workbook.add_worksheet(title=tab_name, rows="1000", cols="10")
-            worksheet.append_row(["Scraped Date", "Time Filter", "Keyword", "Job Title", "Company", "Location", "Job Match", "Apply Link"])
+            worksheet.append_row(["Scraped Date", "Time Filter", "Keyword", "Job Title", "Company", "Location", "Job Match", "Apply Link", "Relevance"])
 
         # Convert dictionaries to a flat list of lists for GSpread
         rows_to_append = []
@@ -505,7 +658,8 @@ def upload_to_google_sheets(fresh_jobs, tab_name):
                 job["Company"],
                 job["Location"],
                 job["Job Match"],
-                job["Apply Link"]
+                job["Apply Link"],
+                job.get("Relevance", "no")
             ])
             
         # Push data to the cloud
@@ -625,20 +779,25 @@ def scrape_linkedin_jobs():
             driver.quit()
 
     final_jobs = fresh_jobs + existing_jobs
+    final_jobs_with_relevance = with_relevance(final_jobs)
+    relevant_jobs_only = [job for job in final_jobs_with_relevance if job.get("Relevance") == "yes"]
 
     print(f"💾 Found {len(fresh_jobs)} NEW jobs! Saving locally to {output_filename}...")
+    print(f"🎯 Relevant IT jobs after filtering: {len(relevant_jobs_only)} / {len(final_jobs_with_relevance)}")
     
-    if final_jobs:
+    if relevant_jobs_only:
         # Save to local CSV file
         with open(output_filename, 'w', encoding='utf-8-sig', newline='') as outfile:
-            writer = csv.DictWriter(outfile, fieldnames=["Scraped Date", "Time Filter", "Keyword", "Job Title", "Company", "Location", "Job Match", "Apply Link"])
+            writer = csv.DictWriter(outfile, fieldnames=OUTPUT_FIELDNAMES)
             writer.writeheader()
-            writer.writerows(final_jobs)
+            writer.writerows(relevant_jobs_only)
             
         # Push the NEW jobs to Google Sheets
-        upload_to_google_sheets(fresh_jobs, google_tab_name)
+        fresh_jobs_with_relevance = with_relevance(fresh_jobs)
+        fresh_relevant_jobs = [job for job in fresh_jobs_with_relevance if job.get("Relevance") == "yes"]
+        upload_to_google_sheets(fresh_relevant_jobs, google_tab_name)
     else:
-        print("⚠️ No exact matches found or no new jobs to add.")
+        print("⚠️ No IT-related jobs found to save.")
 
 if __name__ == '__main__':
     scrape_linkedin_jobs()

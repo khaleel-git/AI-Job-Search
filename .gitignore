@@ -8,7 +8,7 @@
 !*.py
 !*.md
 !.gitignore
-!*.txt
+!**/requirements.txt
 
 # Explicitly ignore sensitive/config/token files
 *.csv
