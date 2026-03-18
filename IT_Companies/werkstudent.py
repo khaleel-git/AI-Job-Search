@@ -139,6 +139,10 @@ MAX_PAGES_PER_KEYWORD = 1  # Quality over quantity: 1 page captures most-relevan
 RETENTION_HOURS = 24
 SCRAPED_DATE_FORMAT = "%Y-%m-%d %H:%M"
 DEBUG_MODE = True
+ACTION_DELAY_RANGE_SECONDS = (1.2, 3.4)
+PAGE_TRANSITION_DELAY_RANGE_SECONDS = (1.8, 4.2)
+KEYWORD_COOLDOWN_EVERY = 5
+KEYWORD_COOLDOWN_RANGE_SECONDS = (14.0, 24.0)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_FIELDNAMES = [
     "Scraped Date",
@@ -173,6 +177,17 @@ PAGINATION_CONTAINER_SELECTOR = "div.jobs-search-pagination"
 def debug_log(message):
     if DEBUG_MODE:
         print(f"[DEBUG] {message}")
+
+
+def human_pause(delay_range, reason=""):
+    """Sleep with jitter to avoid fully deterministic timing between actions."""
+    low, high = delay_range
+    if high < low:
+        low, high = high, low
+    duration = random.uniform(low, high)
+    if reason:
+        debug_log(f"Pause {duration:.2f}s ({reason})")
+    time.sleep(duration)
 
 TITLE_MATCH_TOKENS = ("werkstudent", "werkstudentin", "working student", "student worker", "intern")
 GERMANY_LOCATION_TOKENS = (
@@ -468,7 +483,7 @@ def click_jobs_page_number(driver, page_number):
         try:
             btn = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.CSS_SELECTOR, selector)))
             driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
-            time.sleep(0.2)
+            human_pause((0.18, 0.55), "before clicking page button")
             driver.execute_script("arguments[0].click();", btn)
             debug_log(f"Clicked page {page_number} using selector: {selector}")
             return True
@@ -481,7 +496,7 @@ def click_jobs_page_number(driver, page_number):
         try:
             btn = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.XPATH, xpath)))
             driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
-            time.sleep(0.2)
+            human_pause((0.18, 0.55), "before clicking page button (xpath)")
             driver.execute_script("arguments[0].click();", btn)
             debug_log(f"Clicked page {page_number} using xpath: {xpath}")
             return True
@@ -512,7 +527,7 @@ def click_jobs_next_page(driver):
                 debug_log("Next button is disabled")
                 return False
             driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
-            time.sleep(0.2)
+            human_pause((0.18, 0.55), "before clicking next page")
             driver.execute_script("arguments[0].click();", btn)
             debug_log(f"Clicked next using selector: {selector}")
             return True
@@ -528,7 +543,7 @@ def click_jobs_next_page(driver):
                 debug_log("Next button is disabled")
                 return False
             driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
-            time.sleep(0.2)
+            human_pause((0.18, 0.55), "before clicking next page (xpath)")
             driver.execute_script("arguments[0].click();", btn)
             debug_log(f"Clicked next using xpath: {xpath}")
             return True
@@ -624,7 +639,7 @@ def ensure_pagination_loaded(driver):
             )
             return True
         except TimeoutException:
-            time.sleep(0.6)
+            human_pause((0.45, 1.1), "waiting for pagination render")
 
     return False
 
@@ -655,7 +670,7 @@ def move_to_jobs_page(driver, page_number):
             debug_log(f"Reached page {page_number} via direct click")
             return True
         except TimeoutException:
-            time.sleep(1.5)
+            human_pause((1.0, 2.2), "page switch fallback wait")
             if get_current_jobs_page(driver) == page_number:
                 debug_log(f"Reached page {page_number} after wait fallback")
                 return True
@@ -668,7 +683,7 @@ def move_to_jobs_page(driver, page_number):
         try:
             WebDriverWait(driver, 6).until(lambda d: (get_current_jobs_page(d) or 0) > current)
         except TimeoutException:
-            time.sleep(1.5)
+            human_pause((1.0, 2.2), "next-page fallback wait")
         new_current = get_current_jobs_page(driver) or current
         if new_current <= current:
             debug_log(f"Page did not advance (still {new_current})")
@@ -722,7 +737,7 @@ def load_all_jobs_for_keyword(driver, wait):
                 pass
 
         debug_log(f"Scroll loop: cards={current_count}, last={last_count}, stagnant={stagnant_scrolls}")
-        time.sleep(0.8)  # Reduced from 2s; LinkedIn typically renders within 500-800ms
+        human_pause((0.6, 1.4), "lazy list load")
 
     return driver.find_elements(By.CSS_SELECTOR, JOB_CARD_SELECTOR)
 
@@ -888,23 +903,28 @@ def scrape_linkedin_jobs():
         wait = WebDriverWait(driver, WAIT_SECONDS)
 
         driver.get("https://www.linkedin.com/login")
-        time.sleep(3)  # Wait a moment for the page to load
+        human_pause((2.2, 4.3), "initial login page load")
         #print("\n🛑 ACTION REQUIRED:")
         #print("1. Look at the Chrome window.")
         #print("2. If you are not logged in, please log in manually right now.")
         #print("3. Once you see your LinkedIn feed, come back here.")
         #input("👉 PRESS [ENTER] HERE IN THE TERMINAL TO START SCRAPING...")
 
-        for i, keyword in enumerate(SEARCH_KEYWORDS):
-            # Add random jitter BEFORE navigating to mimic human pacing and avoid mechanical bot detection
+        keywords_to_run = SEARCH_KEYWORDS[:]
+        random.shuffle(keywords_to_run)
+
+        for i, keyword in enumerate(keywords_to_run):
             if i > 0:
-                jitter = random.uniform(1.5, 3.5)
-                time.sleep(jitter)
+                human_pause(ACTION_DELAY_RANGE_SECONDS, "between keyword searches")
+
+            if i > 0 and i % KEYWORD_COOLDOWN_EVERY == 0:
+                human_pause(KEYWORD_COOLDOWN_RANGE_SECONDS, "periodic keyword cooldown")
 
             print(f"\n🔍 Searching for: {keyword} ({TIME_FILTER_LABEL})...")
 
             url = build_search_url(keyword)
             driver.get(url)
+            human_pause(PAGE_TRANSITION_DELAY_RANGE_SECONDS, "search results page load")
 
             # Load page 1 cards first (also triggers lazy list/pagination rendering).
             try:
@@ -927,6 +947,7 @@ def scrape_linkedin_jobs():
                 if page_num == 1:
                     job_cards = page1_cards
                 else:
+                    human_pause((0.7, 1.8), "before pagination move")
                     moved = move_to_jobs_page(driver, page_num)
                     if not moved:
                         print(f"   ℹ️ Could not move to page {page_num}; stopping pagination for this keyword.")
