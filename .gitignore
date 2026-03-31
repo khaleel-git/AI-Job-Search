@@ -9,6 +9,7 @@
 !*.md
 !.gitignore
 !**/requirements.txt
+!Google-Map/useragents.txt
 
 # Explicitly ignore sensitive/config/token files
 *.csv
