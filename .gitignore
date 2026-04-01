@@ -10,6 +10,9 @@
 !.gitignore
 !**/requirements.txt
 !Google-Map/useragents.txt
+!Google-Map/tech_searches.txt
+!Google-Map/tracked_emails.txt
+!Google-Map/tracked_websites.txt
 
 # Explicitly ignore sensitive/config/token files
 *.csv

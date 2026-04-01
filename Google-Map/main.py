@@ -1,8 +1,12 @@
 import time
+import os
+import subprocess
+from urllib.request import urlopen
 from urllib.parse import urlparse
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
+from selenium.common.exceptions import WebDriverException, StaleElementReferenceException
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait as wait
@@ -14,6 +18,81 @@ import re, random
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
+
+
+# Keep a dedicated Selenium profile for Google Maps login/session reuse.
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+GOOGLE_PROFILE_DIR = os.getenv(
+    "GOOGLE_PROFILE_DIR",
+    os.path.join(BASE_DIR, "chrome_google_profile"),
+)
+CHROME_DEBUG_PORT = os.getenv("CHROME_DEBUG_PORT", "9222")
+CHROME_DEBUG_ADDRESS = os.getenv("CHROME_DEBUG_ADDRESS", f"127.0.0.1:{CHROME_DEBUG_PORT}")
+CHROME_EXE_PATH = os.getenv("CHROME_EXE_PATH", r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+
+
+def launch_driver_attached_to_existing_chrome():
+    debug_endpoint = f"http://{CHROME_DEBUG_ADDRESS}/json/version"
+
+    def _wait_for_debug_endpoint(timeout_seconds=20):
+        start = time.time()
+        while time.time() - start < timeout_seconds:
+            try:
+                with urlopen(debug_endpoint, timeout=1.5) as response:
+                    if response.status == 200:
+                        return True
+            except Exception:
+                pass
+            time.sleep(0.5)
+        return False
+
+    def _attach():
+        options = Options()
+        options.add_experimental_option("debuggerAddress", CHROME_DEBUG_ADDRESS)
+        return webdriver.Chrome(
+            service=Service(ChromeDriverManager().install()),
+            options=options,
+        )
+
+    print(f"Starting NEW Chrome debug instance at: {CHROME_DEBUG_ADDRESS}")
+    os.makedirs(GOOGLE_PROFILE_DIR, exist_ok=True)
+
+    if not os.path.exists(CHROME_EXE_PATH):
+        raise RuntimeError(
+            "Chrome executable was not found. Set CHROME_EXE_PATH to your chrome.exe location."
+        )
+
+    subprocess.Popen(
+        [
+            CHROME_EXE_PATH,
+            f"--remote-debugging-port={CHROME_DEBUG_PORT}",
+            f"--user-data-dir={GOOGLE_PROFILE_DIR}",
+            "--no-first-run",
+            "--no-default-browser-check",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    endpoint_ready = _wait_for_debug_endpoint(timeout_seconds=20)
+    if not endpoint_ready:
+        raise RuntimeError(
+            f"Chrome debug endpoint did not become ready at {debug_endpoint}. "
+            "Close existing Chrome processes for this profile and try again."
+        )
+
+    for _ in range(6):
+        try:
+            return _attach()
+        except Exception:
+            time.sleep(1)
+            continue
+
+    raise RuntimeError(
+        "Could not attach to the newly started Chrome debug instance. "
+        "Close existing Chrome windows and run again."
+    )
+
 
 # Functions
 def random_line(afile):
@@ -140,15 +219,9 @@ def find_relevant_pages(base_url):
 
 
 # selenium Initialize Chrome WebDriver
-options = Options()
-# options.add_argument('--headless')  # optional
-options.add_argument('--no-sandbox')
-options.add_argument("--ignore-certificate-errors")
-options.add_argument("--ignore-ssl-errors")
-options.add_argument("--allow-insecure-localhost")
-driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+driver = launch_driver_attached_to_existing_chrome()
 
-driver.get("https://www.google.com/maps/search/businesses+Ghala+Industrial+Estate/@23.5584282,58.3276354,13z?entry=ttu&g_ep=EgoyMDI2MDIyNS4wIKXMDSoASAFQAw%3D%3D")
+driver.get("https://www.google.com/maps/search/software+companies+in+Mitte+Berlin+/@52.1471233,13.1693917,9z/data=!3m1!4b1?entry=ttu&g_ep=EgoyMDI2MDMyOS4wIKXMDSoASAFQAw%3D%3D")
 # Main Logic .......................................
 try:
     tracked_emails = load_tracked_set("tracked_emails.txt")
@@ -162,11 +235,6 @@ try:
         print("✅ Cookies accepted")
     except:
         print("⚠️ No cookie popup found")
-    # Scrollable results container
-    scrollable_div = wait(driver, 10).until(
-        EC.presence_of_element_located((By.XPATH, "//div[@role='feed']"))
-    )
-
     print("Sponsored content check...")
     # --- Keep refreshing until no sponsored content ---
     while True:
@@ -182,15 +250,33 @@ try:
 
     # print(input("Press Enter to continue..."))
     while True:
-        listings = scrollable_div.find_elements(By.XPATH, ".//a[contains(@class,'hfpxzc')]")
+        try:
+            scrollable_div = wait(driver, 10).until(
+                EC.presence_of_element_located((By.XPATH, "//div[@role='feed']"))
+            )
+            listings = scrollable_div.find_elements(By.XPATH, ".//a[contains(@class,'hfpxzc')]")
+        except StaleElementReferenceException:
+            print("⚠ Feed updated while reading listings; retrying...")
+            continue
+
         if not listings:
             break
         
         for i,listing in enumerate(listings):
-            href = listing.get_attribute("href")
+            try:
+                href = listing.get_attribute("href")
+            except StaleElementReferenceException:
+                print("⚠ Listing became stale; skipping this card.")
+                continue
+
             print(f"\n\nProcessing listing {i+1}/{len(listings)}: {href}")
 
-            ActionChains(driver).move_to_element(listing).pause(random.uniform(0.5, 1.5)).click().perform()
+            try:
+                ActionChains(driver).move_to_element(listing).pause(random.uniform(0.5, 1.5)).click().perform()
+            except StaleElementReferenceException:
+                print("⚠ Listing became stale before click; skipping this card.")
+                continue
+
             time.sleep(1 + random.uniform(1, 3))  # keep some post-click delay
 
             # Extract restaurant name
@@ -274,13 +360,28 @@ try:
                 save_to_file("tracked_emails.txt", tracked_emails)
                 save_to_file("tracked_websites.txt", tracked_websites)
 
-            driver.execute_script("arguments[0].scrollIntoView();", scrollable_div)
+            try:
+                driver.execute_script("arguments[0].scrollIntoView();", scrollable_div)
+            except StaleElementReferenceException:
+                print("⚠ Feed became stale during scroll; reloading feed.")
+                continue
+
             time.sleep(1+random.uniform(1, 3))  # random delay for human-like behavior
         # Scroll to load more listings
-        prev_height = driver.execute_script("return arguments[0].scrollHeight", scrollable_div)
-        driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", scrollable_div)
+        try:
+            prev_height = driver.execute_script("return arguments[0].scrollHeight", scrollable_div)
+            driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", scrollable_div)
+        except StaleElementReferenceException:
+            print("⚠ Feed refreshed while paging; retrying current batch.")
+            continue
+
         time.sleep(1+random.uniform(1, 3))  # random delay for human-like behavior
-        new_height = driver.execute_script("return arguments[0].scrollHeight", scrollable_div)
+        try:
+            new_height = driver.execute_script("return arguments[0].scrollHeight", scrollable_div)
+        except StaleElementReferenceException:
+            print("⚠ Feed refreshed after paging; retrying current batch.")
+            continue
+
         if new_height == prev_height:
             break
         print("\n\n@@@@@@@@@@@@@@@@@ Loading more listings...")
