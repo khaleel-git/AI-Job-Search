@@ -54,6 +54,31 @@ python scraper.py
 
 4. Interrupt the script anytime with `Ctrl+C`.
 
+### Sending Emails Securely (No Secrets in Git)
+
+The email sender now reads credentials from environment variables, not from source code.
+
+1. Create a local `.env` file from `.env.example`:
+
+```bash
+cp .env.example .env
+```
+
+2. Set your values in `.env`:
+
+```env
+SENDER_EMAIL=your-email@example.com
+APP_PASSWORD=your-16-digit-app-password
+```
+
+3. Run the sender:
+
+```bash
+python email_sender.py
+```
+
+`.env` is ignored by git via `.gitignore`, so your credentials stay local.
+
 ---
 
 ## Configuration
