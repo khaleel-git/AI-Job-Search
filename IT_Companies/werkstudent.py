@@ -29,6 +29,9 @@ except ImportError:
 # Change only this value before running: "data", "devops", or "both"
 RUN_MODE = "both"  # Options: "devops", "data", "both"
 
+# Temporary switch: set to True to skip scraping and only upload an existing CSV.
+UPLOAD_ONLY_MODE = True
+
 # ⚠️ DEVOPS_SEARCH_KEYWORDS: TESTING STATE
 # Currently limited to 1 keyword for initial testing.
 # Uncomment additional keywords below as needed to expand search scope.
@@ -139,11 +142,13 @@ MAX_PAGES_PER_KEYWORD = 1  # Quality over quantity: 1 page captures most-relevan
 RETENTION_HOURS = 24
 SCRAPED_DATE_FORMAT = "%Y-%m-%d %H:%M"
 DEBUG_MODE = True
+AUTO_HEADLESS_WHEN_NO_DISPLAY = True
 ACTION_DELAY_RANGE_SECONDS = (1.2, 3.4)
 PAGE_TRANSITION_DELAY_RANGE_SECONDS = (1.8, 4.2)
 KEYWORD_COOLDOWN_EVERY = 5
 KEYWORD_COOLDOWN_RANGE_SECONDS = (14.0, 24.0)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOAD_ONLY_CSV_FILENAME = os.path.join(BASE_DIR, "Live_Werkstudent_Jobs.csv")
 OUTPUT_FIELDNAMES = [
     "Scraped Date",
     "Time Filter",
@@ -188,6 +193,14 @@ def human_pause(delay_range, reason=""):
     if reason:
         debug_log(f"Pause {duration:.2f}s ({reason})")
     time.sleep(duration)
+
+
+def should_run_headless():
+    """Use headless mode automatically in non-GUI environments (e.g., cron)."""
+    if not AUTO_HEADLESS_WHEN_NO_DISPLAY:
+        return False
+    display = (os.environ.get("DISPLAY") or "").strip()
+    return display == ""
 
 TITLE_MATCH_TOKENS = ("werkstudent", "werkstudentin", "working student", "student worker", "intern")
 GERMANY_LOCATION_TOKENS = (
@@ -805,6 +818,70 @@ def save_jobs_csv(output_filename, jobs):
         writer.writeheader()
         writer.writerows([{key: job.get(key, "") for key in OUTPUT_FIELDNAMES} for job in jobs])
 
+
+def get_google_sheets_client():
+    if not GSHEETS_AVAILABLE:
+        print("⚠️ Google Sheets upload skipped. Missing libraries: pip install gspread google-auth-oauthlib")
+        return None
+
+    token_path = os.path.join(BASE_DIR, "token.json")
+    credentials_path = os.path.join(BASE_DIR, "credentials.json")
+
+    creds = None
+    if os.path.exists(token_path):
+        creds = Credentials.from_authorized_user_file(token_path, GOOGLE_SCOPES)
+
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            print("\n🔔 Google Authentication Required! A browser window should open...")
+            flow = InstalledAppFlow.from_client_secrets_file(credentials_path, GOOGLE_SCOPES)
+            creds = flow.run_local_server(port=0)
+
+        with open(token_path, 'w', encoding='utf-8') as token:
+            token.write(creds.to_json())
+
+    return gspread.authorize(creds)
+
+
+def build_sheet_row_key(row_values):
+    """Build a stable dedupe key for a sheet row (prefer Apply Link when present)."""
+    padded = list(row_values[:8]) + [""] * max(0, 8 - len(row_values))
+    normalized = [str(cell or "").strip() for cell in padded[:8]]
+    apply_link = normalized[6]
+    if apply_link:
+        return ("link", apply_link)
+    return ("row", tuple(normalized))
+
+
+def get_existing_sheet_keys(worksheet, header):
+    values = worksheet.get_all_values()
+    if not values:
+        return set()
+
+    first_row = [str(cell or "").strip() for cell in values[0][:len(header)]]
+    has_header = first_row == header
+    data_rows = values[1:] if has_header else values
+
+    keys = set()
+    for row in data_rows:
+        keys.add(build_sheet_row_key(row))
+    return keys
+
+
+def filter_unique_rows_for_sheet(rows, existing_keys):
+    unique_rows = []
+    skipped_count = 0
+    for row in rows:
+        key = build_sheet_row_key(row)
+        if key in existing_keys:
+            skipped_count += 1
+            continue
+        unique_rows.append(row)
+        existing_keys.add(key)
+    return unique_rows, skipped_count
+
 def upload_to_google_sheets(fresh_jobs, tab_name):
     """Handles the connection and uploading of new data to Google Sheets via User OAuth."""
     if not fresh_jobs:
@@ -812,33 +889,10 @@ def upload_to_google_sheets(fresh_jobs, tab_name):
 
     print("\n☁️ Uploading new jobs to Google Sheets...")
     
-    if not GSHEETS_AVAILABLE:
-        print("⚠️ Google Sheets upload skipped. Missing libraries: pip install gspread google-auth-oauthlib")
-        return
-         
     try:
-        creds = None
-        token_path = os.path.join(BASE_DIR, "token.json")
-        credentials_path = os.path.join(BASE_DIR, "credentials.json")
-        
-        # The file token.json stores the user's access and refresh tokens.
-        if os.path.exists(token_path):
-            creds = Credentials.from_authorized_user_file(token_path, GOOGLE_SCOPES)
-            
-        # If there are no (valid) credentials available, let the user log in.
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-            else:
-                print("\n🔔 Google Authentication Required! A browser window should open...")
-                flow = InstalledAppFlow.from_client_secrets_file(credentials_path, GOOGLE_SCOPES)
-                creds = flow.run_local_server(port=0)
-            
-            # Save the credentials for the next run so you don't have to login again
-            with open(token_path, 'w', encoding='utf-8') as token:
-                token.write(creds.to_json())
-
-        client = gspread.authorize(creds)
+        client = get_google_sheets_client()
+        if client is None:
+            return
         
         # Open the workbook
         workbook = client.open_by_key(GOOGLE_SHEET_ID)
@@ -850,6 +904,10 @@ def upload_to_google_sheets(fresh_jobs, tab_name):
             print(f"   Creating '{tab_name}' tab because it didn't exist...")
             worksheet = workbook.add_worksheet(title=tab_name, rows="10000", cols="9")
             worksheet.append_row(["Scraped Date", "Time Filter", "Keyword", "Job Title", "Company", "Location", "Apply Link", "Relevance"])
+
+        header = ["Scraped Date", "Time Filter", "Keyword", "Job Title", "Company", "Location", "Apply Link", "Relevance"]
+        if not worksheet.row_values(1):
+            worksheet.append_row(header)
 
         # Convert dictionaries to a flat list of lists for GSpread
         rows_to_append = []
@@ -864,11 +922,70 @@ def upload_to_google_sheets(fresh_jobs, tab_name):
                 job["Apply Link"],
                 job.get("Relevance", "no")
             ])
+
+        existing_keys = get_existing_sheet_keys(worksheet, header)
+        unique_rows, skipped_count = filter_unique_rows_for_sheet(rows_to_append, existing_keys)
             
         # Push data to the cloud
-        worksheet.append_rows(rows_to_append)
-        print(f"✅ Successfully added {len(fresh_jobs)} jobs to your Google Sheet!")
+        if unique_rows:
+            worksheet.append_rows(unique_rows)
+        print(f"✅ Successfully added {len(unique_rows)} new jobs to your Google Sheet! Skipped {skipped_count} duplicates.")
         
+    except FileNotFoundError:
+        print("⚠️ 'credentials.json' not found in the folder.")
+        print("   Please download an 'OAuth 2.0 Client ID' JSON file from Google Cloud Console.")
+    except Exception as e:
+        print(f"⚠️ Google Sheets Upload Failed: {e}")
+
+
+def upload_csv_to_google_sheets(csv_path, tab_name):
+    """Append CSV rows to a worksheet without removing existing contents."""
+    if not os.path.exists(csv_path):
+        print(f"⚠️ CSV file not found: {csv_path}")
+        return
+
+    rows = []
+    with open(csv_path, 'r', encoding='utf-8-sig') as infile:
+        reader = csv.DictReader(infile)
+        for row in reader:
+            rows.append([
+                row.get("Scraped Date", ""),
+                row.get("Time Filter", ""),
+                row.get("Keyword", ""),
+                row.get("Job Title", ""),
+                row.get("Company", ""),
+                row.get("Location", ""),
+                row.get("Apply Link", ""),
+                row.get("Relevance", "no"),
+            ])
+
+    print(f"\n☁️ Upload-only mode: pushing {len(rows)} CSV rows to Google Sheets...")
+
+    try:
+        client = get_google_sheets_client()
+        if client is None:
+            return
+
+        workbook = client.open_by_key(GOOGLE_SHEET_ID)
+        try:
+            worksheet = workbook.worksheet(tab_name)
+        except gspread.exceptions.WorksheetNotFound:
+            print(f"   Creating '{tab_name}' tab because it didn't exist...")
+            worksheet = workbook.add_worksheet(title=tab_name, rows="10000", cols="9")
+
+        header = ["Scraped Date", "Time Filter", "Keyword", "Job Title", "Company", "Location", "Apply Link", "Relevance"]
+        # Add header once if the sheet is empty.
+        if not worksheet.row_values(1):
+            worksheet.append_row(header)
+
+        existing_keys = get_existing_sheet_keys(worksheet, header)
+        unique_rows, skipped_count = filter_unique_rows_for_sheet(rows, existing_keys)
+
+        # Append new CSV rows under existing data.
+        if unique_rows:
+            worksheet.append_rows(unique_rows)
+
+        print(f"✅ Upload-only complete. Appended {len(unique_rows)} rows from CSV to '{tab_name}', skipped {skipped_count} duplicates.")
     except FileNotFoundError:
         print("⚠️ 'credentials.json' not found in the folder.")
         print("   Please download an 'OAuth 2.0 Client ID' JSON file from Google Cloud Console.")
@@ -897,6 +1014,15 @@ def scrape_linkedin_jobs():
         options = webdriver.ChromeOptions()
         profile_path = os.path.join(BASE_DIR, "chrome_linkedin_profile")
         options.add_argument(f"user-data-dir={profile_path}")
+
+        # Stability flags for VM/cron environments.
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+
+        if should_run_headless():
+            options.add_argument("--headless=new")
+            debug_log("No DISPLAY detected. Starting Chrome in headless mode.")
 
         driver = webdriver.Chrome(options=options)
         driver.maximize_window()
@@ -1022,4 +1148,7 @@ def scrape_linkedin_jobs():
     save_jobs_csv(non_relevant_output_filename, non_relevant_jobs_only)
 
 if __name__ == '__main__':
-    scrape_linkedin_jobs()
+    if UPLOAD_ONLY_MODE:
+        upload_csv_to_google_sheets(UPLOAD_ONLY_CSV_FILENAME, "Werkstudent Jobs (Live)")
+    else:
+        scrape_linkedin_jobs()
