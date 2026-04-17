@@ -26,22 +26,119 @@ except ImportError:
     Request = None
     GSHEETS_AVAILABLE = False
 
+# Change only this value before running: "data", "devops", or "both"
+RUN_MODE = "both"  # Options: "devops", "data", "both"
+
 # Temporary switch: set to True to skip scraping and only upload an existing CSV.
 UPLOAD_ONLY_MODE = False
 
-# Basic working student keyword filter only.
-SEARCH_KEYWORDS = [
-    "working student",
-    "werkstudent",
+# ⚠️ DEVOPS_SEARCH_KEYWORDS: TESTING STATE
+# Currently limited to 1 keyword for initial testing.
+# Uncomment additional keywords below as needed to expand search scope.
+DEVOPS_SEARCH_KEYWORDS = [
+    # --- Werkstudent (German) ---
+    "Werkstudent DevOps",
+    "Werkstudent DevOps Cloud",
+    "Werkstudent Platform Engineer",
+    "Werkstudent Platform Engineering",
+    "Werkstudent Infrastructure",
+    "Werkstudent Cloud",
+    "Werkstudent Cloud Engineer",
+    "Werkstudent Site Reliability Engineer",
+    "Werkstudent SRE",
+    "Werkstudent CI/CD",
+    "Werkstudent Kubernetes",
+    "Werkstudent Terraform",
+    "Werkstudent Automation Engineer",
+    "Werkstudent Monitoring",
+    # --- Werkstudentin (German feminine form) ---
+    "Werkstudentin DevOps",
+    "Werkstudentin Cloud",
+    # --- Working Student (English) ---
+    "Working Student DevOps",
+    "Working Student Platform Engineer",
+    "Working Student Platform Engineering",
+    "Working Student Infrastructure",
+    "Working Student Cloud",
+    "Working Student Cloud Engineer",
+    "Working Student Site Reliability Engineer",
+    "Working Student SRE",
+    "Working Student CI/CD",
+    "Working Student Kubernetes",
+    "Working Student Terraform",
+    "Working Student Automation Engineer",
+    "Working Student Monitoring"
 ]
 
+DATA_SEARCH_KEYWORDS = [
+    # --- Werkstudent (German) ---
+    "Werkstudent Python AI",
+    "Werkstudent Data Engineering",
+    "Werkstudent Data Engineer",
+    "Werkstudent Data Analyst",
+    "Werkstudent Data Science",
+    "Werkstudent Analytics",
+    "Werkstudent Machine Learning",
+    "Werkstudent ML",
+    "Werkstudent KI",
+    "Werkstudent AI",
+    "Werkstudent NLP",
+    "Werkstudent MLOps",
+    "Werkstudent Business Intelligence",
+    "Werkstudent BI",
+    "Werkstudent Datenanalyse",
+    "Werkstudent Daten",
+    # --- Werkstudentin (German feminine form) ---
+    "Werkstudentin Data",
+    "Werkstudentin Machine Learning",
+    # --- Working Student (English) ---
+    "Working Student Data Engineer",
+    "Working Student Data Engineering",
+    "Working Student Data Engineer",
+    "Working Student Data Analyst",
+    "Working Student Data Science",
+    "Working Student Analytics",
+    "Working Student Machine Learning",
+    "Working Student ML",
+    "Working Student KI",
+    "Working Student AI",
+    "Working Student NLP",
+    "Working Student MLOps",
+    "Working Student Business Intelligence",
+    "Working Student BI"
+]
+
+def unique_keywords(keywords):
+    """Return de-duplicated keywords preserving insertion order."""
+    seen = set()
+    ordered = []
+    for kw in keywords:
+        normalized = kw.strip().lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(kw)
+    return ordered
+
+
+normalized_mode = (RUN_MODE or "").strip().lower()
+if normalized_mode == "data":
+    SEARCH_KEYWORDS = unique_keywords(DATA_SEARCH_KEYWORDS)
+elif normalized_mode == "devops":
+    SEARCH_KEYWORDS = unique_keywords(DEVOPS_SEARCH_KEYWORDS)
+elif normalized_mode == "both":
+    SEARCH_KEYWORDS = unique_keywords(DATA_SEARCH_KEYWORDS + DEVOPS_SEARCH_KEYWORDS)
+else:
+    print(f"⚠️ Unknown RUN_MODE='{RUN_MODE}'. Falling back to 'both'.")
+    SEARCH_KEYWORDS = unique_keywords(DATA_SEARCH_KEYWORDS + DEVOPS_SEARCH_KEYWORDS)
+
 LOCATION = "Germany"
-JOB_TYPE_FILTER = ""  # Optional LinkedIn filter, e.g. "P" (part-time) or "P,I"
+JOB_TYPE_FILTER = "P"  # LinkedIn: part-time only
 TIME_FILTER = "r86400"
 TIME_FILTER_LABEL = "Past 24 Hours"
 STRICT_GERMANY_LOCATION = True
 WAIT_SECONDS = 15
-MAX_PAGES_PER_KEYWORD = 5  # Quality over quantity: 1 page captures most-relevant (fresh) jobs + faster execution
+MAX_PAGES_PER_KEYWORD = 1  # Quality over quantity: 1 page captures most-relevant (fresh) jobs + faster execution
 RETENTION_HOURS = 24
 SCRAPED_DATE_FORMAT = "%Y-%m-%d %H:%M"
 DEBUG_MODE = True
@@ -62,9 +159,6 @@ OUTPUT_FIELDNAMES = [
     "Company",
     "Location",
     "Apply Link",
-    "Skills Found",
-    "German_Level",
-    "Relevance_Score",
     "Relevance",
 ]
 
@@ -85,42 +179,11 @@ COMPANY_SELECTOR = (
 LOCATION_SELECTOR = "span.job-search-card__location, ul.job-card-container__metadata-wrapper li"
 LINK_SELECTOR = "a.base-card__full-link, a.job-card-list__title, a.job-card-container__link"
 PAGINATION_CONTAINER_SELECTOR = "div.jobs-search-pagination"
-JOB_DESCRIPTION_SELECTORS = (
-    "div.show-more-less-html__markup",
-    "div.jobs-description__content",
-    "div.jobs-box__html-content",
-)
 
 
 def debug_log(message):
     if DEBUG_MODE:
         print(f"[DEBUG] {message}")
-
-
-def load_user_agents():
-    """Load user agents from useragents.txt file."""
-    useragents_file = os.path.join(BASE_DIR, "useragents.txt")
-    if not os.path.exists(useragents_file):
-        debug_log(f"User agents file not found: {useragents_file}")
-        return []
-    try:
-        with open(useragents_file, 'r') as f:
-            user_agents = [line.strip() for line in f if line.strip()]
-        debug_log(f"Loaded {len(user_agents)} user agents")
-        return user_agents
-    except Exception as e:
-        debug_log(f"Error loading user agents: {e}")
-        return []
-
-
-def get_random_user_agent():
-    """Get a random user agent from the list."""
-    user_agents = load_user_agents()
-    if user_agents:
-        selected = random.choice(user_agents)
-        debug_log(f"Selected user agent: {selected[:50]}...")
-        return selected
-    return None
 
 
 def human_pause(delay_range, reason=""):
@@ -141,11 +204,173 @@ def should_run_headless():
     display = (os.environ.get("DISPLAY") or "").strip()
     return display == ""
 
-TITLE_MATCH_TOKENS = ("werkstudent", "working student")
+TITLE_MATCH_TOKENS = ("werkstudent", "werkstudentin", "working student", "student worker", "intern")
 GERMANY_LOCATION_TOKENS = (
     "germany",
     "deutschland",
+    "berlin",
+    "munich",
+    "muenchen",
+    "hamburg",
+    "frankfurt",
+    "cologne",
+    "koln",
+    "stuttgart",
+    "dusseldorf",
+    "dortmund",
+    "essen",
+    "bremen",
+    "leipzig",
+    "hanover",
+    "hannover",
+    "nuremberg",
+    "nuernberg",
+    "karlsruhe",
 )
+
+GERMANY_STATE_TOKENS = (
+    "baden-wurttemberg",
+    "baden wuerttemberg",
+    "baden-wuerttemberg",
+    "bavaria",
+    "bayern",
+    "berlin",
+    "brandenburg",
+    "bremen",
+    "hamburg",
+    "hesse",
+    "hessen",
+    "lower saxony",
+    "niedersachsen",
+    "mecklenburg-western pomerania",
+    "mecklenburg vorpommern",
+    "north rhine-westphalia",
+    "north rhine westphalia",
+    "nordrhein-westfalen",
+    "nordrhein westfalen",
+    "nrw",
+    "rhineland-palatinate",
+    "rhineland palatinate",
+    "rheinland-pfalz",
+    "rheinland pfalz",
+    "saarland",
+    "saxony",
+    "sachsen",
+    "saxony-anhalt",
+    "saxony anhalt",
+    "sachsen-anhalt",
+    "sachsen anhalt",
+    "schleswig-holstein",
+    "schleswig holstein",
+    "thuringia",
+    "thueringen",
+    "thuringen",
+)
+
+IT_RELEVANT_TITLE_PHRASES = (
+    "software",
+    "softwareentwicklung",
+    "software engineer",
+    "software engineering",
+    "software developer",
+    "developer",
+    "development",
+    "programming",
+    "full-stack",
+    "fullstack",
+    "backend",
+    "frontend",
+    "web development",
+    "qa",
+    "quality assurance",
+    "testing",
+    "automation",
+    "it-engineering",
+    "it engineering",
+    "systemintegration",
+    "system integration",
+    "system engineer",
+    "api-management",
+    "api management",
+    "cloud",
+    "infrastructure",
+    "platform",
+    "site reliability",
+    "sre",
+    "devops",
+    "security",
+    "cyber security",
+    "cybersecurity",
+    "identity access",
+    "data",
+    "data engineering",
+    "data engineer",
+    "data analyst",
+    "data science",
+    "data platform",
+    "data warehouse",
+    "business intelligence",
+    "analytics engineering",
+    "datenanalyse",
+    "datenanalyst",
+    "dateningenieur",
+    "datenplattform",
+    "mlops",
+    "machine learning",
+    "devops",
+    "site reliability",
+    "sre",
+    "platform engineer",
+    "platform engineering",
+    "cloud engineer",
+    "infrastructure",
+    "kubernetes",
+    "terraform",
+    "ci/cd",
+    "ci cd",
+)
+
+IT_RELEVANT_WORD_TOKENS = (
+    "it",
+    "ai",
+    "ml",
+    "qa",
+    "api",
+    "sre",
+)
+
+NON_IT_TITLE_PHRASES = (
+    "hr",
+    "human resources",
+    "people & culture",
+    "people service",
+    "recruiting",
+    "employer branding",
+    "active sourcing",
+    "sales",
+    "telesales",
+    "marketing",
+    "influencer",
+    "campaign",
+    "communication",
+    "customer success",
+    "finance",
+    "faktura",
+    "procurement",
+    "legal",
+    "logistik",
+    "logistics",
+    "asset management",
+    "immobilien",
+    "facility management",
+    "bauingenieur",
+    "maschinenbau",
+)
+
+
+def contains_whole_word(text, token):
+    return bool(re.search(rf"\b{re.escape(token)}\b", text))
+
 
 def normalize_geo_text(text):
     normalized = (text or "").strip().lower()
@@ -179,189 +404,57 @@ def should_keep_title(title):
     return any(token in normalized for token in TITLE_MATCH_TOKENS)
 
 
-def extract_skills_from_description(job_description):
-    """Extract skills found in description as comma-separated string."""
-    normalized = (job_description or "").lower()
-    skills_map = {
-        r"\bpython\b": "Python",
-        r"\bsql\b": "SQL",
-        r"\bpower\s*bi\b": "Power BI",
-        r"\blinux\b": "Linux",
-        r"\bmachine\s+learning\b": "Machine Learning",
-        r"\bartificial\s+intelligence\b": "AI",
-        r"\bdata\s+engineering\b": "Data Engineering",
-        r"\bdata\s+science\b": "Data Science",
-        r"\bdata\s+analytics\b": "Data Analytics",
-        r"\bdata\s+analysis\b": "Data Analysis",
-        r"\bpandas\b": "Pandas",
-        r"\bnumpy\b": "NumPy",
-        r"\bexcel\b": "Excel",
-        r"\btableau\b": "Tableau",
-    }
-    found_skills = []
-    for pattern, label in skills_map.items():
-        if re.search(pattern, normalized):
-            found_skills.append(label)
-    
-    # Check for cloud platforms
-    if re.search(r"\baws\b", normalized):
-        found_skills.append("AWS")
-    if re.search(r"\bazure\b", normalized):
-        found_skills.append("Azure")
-    if re.search(r"\bgcp\b|\bgoogle\s+cloud\b", normalized):
-        found_skills.append("GCP")
-    
-    # Check for KI / AI patterns
-    if re.search(r"künstliche\s+intelligenz|kuenstliche\s+intelligenz", normalized):
-        if "AI" not in found_skills:
-            found_skills.append("KI")
-    elif re.search(r"\bai\b", normalized):
-        if "AI" not in found_skills:
-            found_skills.append("AI")
-    elif re.search(r"\bki\b", normalized):
-        if "AI" not in found_skills and "KI" not in found_skills:
-            found_skills.append("KI")
-    
-    return ", ".join(found_skills) if found_skills else ""
+def is_it_related(title, keyword=""):
+    """Return yes/no relevance for IT jobs (programming/devops/data/ml) based on title and keyword."""
+    title_normalized = (title or "").strip().lower()
+    keyword_normalized = (keyword or "").strip().lower()
+
+    if any(phrase in title_normalized for phrase in NON_IT_TITLE_PHRASES):
+        return "no"
+
+    if any(phrase in title_normalized for phrase in IT_RELEVANT_TITLE_PHRASES):
+        return "yes"
+
+    if any(contains_whole_word(title_normalized, token) for token in IT_RELEVANT_WORD_TOKENS):
+        return "yes"
+
+    # Fallback for generic titles from IT-focused keywords.
+    keyword_signals = (
+        "data",
+        "devops",
+        "mlops",
+        "machine learning",
+        "software",
+        "developer",
+        "engineering",
+        "programming",
+        "cloud",
+        "site reliability",
+        "platform engineer",
+        "cloud engineer",
+        "kubernetes",
+        "terraform",
+    )
+    keyword_word_signals = ("it", "ai", "sre")
+    keyword_has_it_signal = any(signal in keyword_normalized for signal in keyword_signals) or any(
+        contains_whole_word(keyword_normalized, signal) for signal in keyword_word_signals
+    )
+    if keyword_has_it_signal:
+        if any(token in title_normalized for token in ("engineering", "engineer", "developer", "software", "platform", "cloud", "automation", "analytics", "data", "testing")):
+            return "yes"
+        if any(contains_whole_word(title_normalized, token) for token in IT_RELEVANT_WORD_TOKENS):
+            return "yes"
+
+    return "no"
 
 
-def check_german_required(job_description):
-    """Classify German language requirement as: required / preferred / not_required."""
-    text = (job_description or "").lower()
-    
-    # Strong indicators of REQUIRED German
-    required_patterns = [
-        r"\bfließend\s+deutsch\b|\bfliessend\s+deutsch\b",
-        r"\bverhandlungssicher\b",
-        r"\bsehr\s+gute\s+deutschkenntnisse\b",
-        r"\bdeutsch\s+in\s+wort\s+und\s+schrift\b",
-        r"\bgerman\s+(required|mandatory)\b",
-        r"\bdeutsch\s+(required|mandatory|erforderlich)\b",
-        r"\b(b2|c1|c2)\b.*(deutsch|german)",
-        r"(deutsch|german).*(b2|c1|c2)",
-    ]
-    
-    # Soft indicators of PREFERRED German (contextual with negative lookahead)
-    preferred_patterns = [
-        r"\bgute\s+deutschkenntnisse\b",
-        r"\bdeutschkenntnisse\b(?=.*(?:von\s+vorteil|wünschenswert|nice\s+to\s+have|plus))",
-        r"\bgerman\s+(nice\s+to\s+have|plus|preferred|advantage)\b",
-        r"\b(a1|a2|b1)\b.*(deutsch|german)",
-    ]
-    
-    # Check for REQUIRED
-    for pattern in required_patterns:
-        if re.search(pattern, text):
-            return "required"
-    
-    # Check for PREFERRED
-    for pattern in preferred_patterns:
-        if re.search(pattern, text):
-            return "preferred"
-    
-    # Check for explicitly English-only
-    if re.search(r"\benglish\s+(required|mandatory|only)", text) and not re.search(r"deutsch|german", text):
-        return "not_required"
-    
-    return "not_required"
-
-
-def classify_relevance_from_description(job_description):
-    """
-    Classify relevance using OR logic: if ANY target skill is found, mark as relevant.
-    Excludes jobs matching certain patterns (data entry, admin, sales, HR, customer service).
-    Returns (relevance_str, skill_count_float): relevant/non_relevant and count of skills found.
-    """
-    text = (job_description or "").lower()
-    
-    # All target skills - if ANY of these are found, job is relevant (OR logic)
-    target_skills = [
-        r"\bpython\b",
-        r"\bsql\b",
-        r"\bpower\s*bi\b",
-        r"\blinux\b",
-        r"\bmachine\s+learning\b",
-        r"\bartificial\s+intelligence\b",
-        r"\bdata\s+engineering\b",
-        r"\bdata\s+science\b",
-        r"\bdata\s+analytics?\b",
-        r"\bdata\s+analysis\b",
-        r"\bpandas\b",
-        r"\bnumpy\b",
-        r"\bexcel\b",
-        r"\btableau\b",
-        r"\baws\b",
-        r"\bazure\b",
-        r"\bgcp\b",
-        r"\bgoogle\s+cloud\b",
-        r"künstliche\s+intelligenz|kuenstliche\s+intelligenz",
-        r"\bai\b",
-        r"\bki\b",
-    ]
-    
-    # EXCLUDE patterns: jobs that are NOT relevant even if skills are mentioned
-    # (data entry, admin, sales, HR, reception, customer service)
-    exclude_patterns = [
-        r"\bdata\s+entry\b",
-        r"\badministrative\b",
-        r"\badmin\b",
-        r"\bsales\b",
-        r"\bhr\b",
-        r"\bhuman\s+resources\b",
-        r"\breception\b",
-        r"\bcustomer\s+service\b",
-    ]
-    
-    # If any exclude pattern matches, job is non-relevant regardless of skills
-    for pattern in exclude_patterns:
-        if re.search(pattern, text):
-            debug_log(f"Excluded job due to pattern match: {pattern}")
-            return "non_relevant", 0.0
-    
-    # Check if ANY target skill is found (OR logic)
-    skill_count = 0
-    for pattern in target_skills:
-        if re.search(pattern, text):
-            skill_count += 1
-    
-    # If any skill found, mark as relevant
-    if skill_count > 0:
-        return "relevant", float(skill_count)
-    else:
-        return "non_relevant", 0.0
-
-
-def extract_job_description(driver, wait, card):
-    try:
-        clickable = None
-        links = card.find_elements(By.CSS_SELECTOR, LINK_SELECTOR)
-        if links:
-            clickable = links[0]
-        else:
-            clickable = card
-
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", clickable)
-        human_pause((0.15, 0.4), "before opening job details")
-        driver.execute_script("arguments[0].click();", clickable)
-    except WebDriverException:
-        return ""
-
-    human_pause((0.35, 0.8), "waiting for description panel")
-
-    for selector in JOB_DESCRIPTION_SELECTORS:
-        try:
-            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
-            descriptions = driver.find_elements(By.CSS_SELECTOR, selector)
-            for element in descriptions:
-                text = (element.text or "").strip()
-                if text:
-                    return text
-        except TimeoutException:
-            continue
-        except WebDriverException:
-            continue
-
-    return ""
+def with_relevance(rows):
+    enriched = []
+    for row in rows:
+        current = dict(row)
+        current["Relevance"] = is_it_related(current.get("Job Title", ""), current.get("Keyword", ""))
+        enriched.append(current)
+    return enriched
 
 
 def is_germany_location(location_text):
@@ -369,19 +462,24 @@ def is_germany_location(location_text):
     if not normalized:
         return False
 
-    return any(token in normalized for token in GERMANY_LOCATION_TOKENS)
+    if any(token in normalized for token in GERMANY_LOCATION_TOKENS):
+        return True
+
+    if any(token in normalized for token in GERMANY_STATE_TOKENS):
+        return True
+
+    return False
 
 
 def build_search_url(keyword):
-    params = {
-        "keywords": keyword,
-        "location": LOCATION,
-        "f_TPR": TIME_FILTER,
-    }
-    if (JOB_TYPE_FILTER or "").strip():
-        params["f_JT"] = JOB_TYPE_FILTER
-
-    query = urlencode(params)
+    query = urlencode(
+        {
+            "keywords": keyword,
+            "location": LOCATION,
+            "f_TPR": TIME_FILTER,
+            "f_JT": JOB_TYPE_FILTER,
+        }
+    )
     return f"https://www.linkedin.com/jobs/search/?{query}"
 
 
@@ -695,6 +793,8 @@ def load_existing_jobs(output_filenames, now_utc):
             for row in reader:
                 if "Time Filter" not in row:
                     row["Time Filter"] = "Unknown"
+                if "Relevance" not in row:
+                    row["Relevance"] = is_it_related(row.get("Job Title", ""), row.get("Keyword", ""))
 
                 apply_link = (row.get("Apply Link", "") or "").strip()
                 if not apply_link:
@@ -728,6 +828,8 @@ def build_run_csv_paths(now_utc):
 
     canonical_relevant = os.path.join(JOBS_DIR, "Live_Werkstudent_Jobs.csv")
     canonical_non_relevant = os.path.join(JOBS_DIR, "Live_Werkstudent_Jobs_Non_Relevant.csv")
+
+    # Keep timestamp first as requested, with a suffix to distinguish relevance split.
     run_relevant = os.path.join(day_dir, f"{run_time}_relevant.csv")
     run_non_relevant = os.path.join(day_dir, f"{run_time}_non_relevant.csv")
 
@@ -757,17 +859,17 @@ def resolve_upload_only_csv_paths(now_utc):
             if not os.path.isfile(full_path):
                 continue
 
-            relevant_match = re.match(r"^(\d{2}:\d{2})_relevant\.csv$", name)
-            non_relevant_match = re.match(r"^(\d{2}:\d{2})_non_relevant\.csv$", name)
+            rel_match = re.match(r"^(\d{2}:\d{2})_relevant\.csv$", name)
+            non_rel_match = re.match(r"^(\d{2}:\d{2})_non_relevant\.csv$", name)
 
-            if relevant_match:
-                time_text = relevant_match.group(1)
+            if rel_match:
+                time_text = rel_match.group(1)
                 if time_text >= latest_relevant_time:
                     latest_relevant_time = time_text
                     latest_relevant = full_path
 
-            if non_relevant_match:
-                time_text = non_relevant_match.group(1)
+            if non_rel_match:
+                time_text = non_rel_match.group(1)
                 if time_text >= latest_non_relevant_time:
                     latest_non_relevant_time = time_text
                     latest_non_relevant = full_path
@@ -861,10 +963,10 @@ def upload_to_google_sheets(fresh_jobs, tab_name):
             worksheet = workbook.worksheet(tab_name)
         except gspread.exceptions.WorksheetNotFound:
             print(f"   Creating '{tab_name}' tab because it didn't exist...")
-            worksheet = workbook.add_worksheet(title=tab_name, rows="10000", cols="10")
-            worksheet.append_row(["Scraped Date", "Time Filter", "Keyword", "Job Title", "Company", "Location", "Apply Link", "Skills Found", "German_Level", "Relevance_Score", "Relevance"])
+            worksheet = workbook.add_worksheet(title=tab_name, rows="10000", cols="9")
+            worksheet.append_row(["Scraped Date", "Time Filter", "Keyword", "Job Title", "Company", "Location", "Apply Link", "Relevance"])
 
-        header = ["Scraped Date", "Time Filter", "Keyword", "Job Title", "Company", "Location", "Apply Link", "Skills Found", "German_Level", "Relevance_Score", "Relevance"]
+        header = ["Scraped Date", "Time Filter", "Keyword", "Job Title", "Company", "Location", "Apply Link", "Relevance"]
         if not worksheet.row_values(1):
             worksheet.append_row(header)
 
@@ -879,10 +981,7 @@ def upload_to_google_sheets(fresh_jobs, tab_name):
                 job["Company"],
                 job["Location"],
                 job["Apply Link"],
-                job.get("Skills Found", ""),
-                job.get("German_Level", "not_required"),
-                job.get("Relevance_Score", 0),
-                job.get("Relevance", "non_relevant"),
+                job.get("Relevance", "no")
             ])
 
         existing_keys = get_existing_sheet_keys(worksheet, header)
@@ -918,10 +1017,7 @@ def upload_csv_to_google_sheets(csv_path, tab_name):
                 row.get("Company", ""),
                 row.get("Location", ""),
                 row.get("Apply Link", ""),
-                row.get("Skills Found", ""),
-                row.get("German_Level", "not_required"),
-                row.get("Relevance_Score", 0),
-                row.get("Relevance", "non_relevant"),
+                row.get("Relevance", "no"),
             ])
 
     print(f"\n☁️ Upload-only mode: pushing {len(rows)} CSV rows to Google Sheets...")
@@ -936,9 +1032,9 @@ def upload_csv_to_google_sheets(csv_path, tab_name):
             worksheet = workbook.worksheet(tab_name)
         except gspread.exceptions.WorksheetNotFound:
             print(f"   Creating '{tab_name}' tab because it didn't exist...")
-            worksheet = workbook.add_worksheet(title=tab_name, rows="10000", cols="10")
+            worksheet = workbook.add_worksheet(title=tab_name, rows="10000", cols="9")
 
-        header = ["Scraped Date", "Time Filter", "Keyword", "Job Title", "Company", "Location", "Apply Link", "Skills Found", "German_Level", "Relevance_Score", "Relevance"]
+        header = ["Scraped Date", "Time Filter", "Keyword", "Job Title", "Company", "Location", "Apply Link", "Relevance"]
         # Add header once if the sheet is empty.
         if not worksheet.row_values(1):
             worksheet.append_row(header)
@@ -962,8 +1058,8 @@ def scrape_linkedin_jobs():
     now_utc = datetime.now(timezone.utc)
     run_timestamp_display = now_utc.strftime(SCRAPED_DATE_FORMAT)
     run_paths = build_run_csv_paths(now_utc)
-    relevant_google_tab_name = "Werkstudent Jobs (Relevant)"
-    non_relevant_google_tab_name = "Werkstudent Jobs (Non Relevant)"
+    google_tab_name = "Werkstudent Jobs (Live)"  # Single live tab; appends data with run timestamps
+    non_relevant_google_tab_name = "Non Relevance Werkstudent Jobs (Live)"
     output_filename = run_paths["canonical_relevant"]
     non_relevant_output_filename = run_paths["canonical_non_relevant"]
 
@@ -986,11 +1082,6 @@ def scrape_linkedin_jobs():
         options = webdriver.ChromeOptions()
         profile_path = os.path.join(BASE_DIR, "chrome_linkedin_profile")
         options.add_argument(f"user-data-dir={profile_path}")
-
-        # Set a random user agent
-        user_agent = get_random_user_agent()
-        if user_agent:
-            options.add_argument(f"user-agent={user_agent}")
 
         # Stability flags for VM/cron environments.
         options.add_argument("--no-sandbox")
@@ -1081,17 +1172,6 @@ def scrape_linkedin_jobs():
                         if clean_link in seen_links or clean_link in run_seen_links:
                             continue
 
-                        description_text = extract_job_description(driver, wait, card)
-                        
-                        # Classify relevance using OR logic: any target skill found = relevant
-                        relevance, relevance_score = classify_relevance_from_description(description_text)
-                        
-                        # Extract skills (informational only, not used for relevance)
-                        skills_found = extract_skills_from_description(description_text)
-                        
-                        # Check German requirement level
-                        german_level = check_german_required(description_text)
-
                         fresh_jobs.append({
                             "Scraped Date": run_timestamp_display,
                             "Time Filter": TIME_FILTER_LABEL,
@@ -1100,10 +1180,6 @@ def scrape_linkedin_jobs():
                             "Company": company,
                             "Location": location,
                             "Apply Link": clean_link,
-                            "Skills Found": skills_found,
-                            "German_Level": german_level,
-                            "Relevance_Score": relevance_score,
-                            "Relevance": relevance,
                         })
                         run_seen_links.add(clean_link)
                     except (NoSuchElementException, StaleElementReferenceException, WebDriverException) as e:
@@ -1117,40 +1193,39 @@ def scrape_linkedin_jobs():
             print("\n✅ Finished scraping. Closing browser...")
             driver.quit()
 
-    final_jobs = []
-    for row in (fresh_jobs + existing_jobs):
-        item = dict(row)
-        if not item.get("Relevance"):
-            item["Relevance"] = "non_relevant"
-        final_jobs.append(item)
-
-    relevant_jobs = [job for job in final_jobs if job.get("Relevance") == "relevant"]
-    non_relevant_jobs = [job for job in final_jobs if job.get("Relevance") == "non_relevant"]
+    final_jobs = fresh_jobs + existing_jobs
+    final_jobs_with_relevance = with_relevance(final_jobs)
+    relevant_jobs_only = [job for job in final_jobs_with_relevance if job.get("Relevance") == "yes"]
+    non_relevant_jobs_only = [job for job in final_jobs_with_relevance if job.get("Relevance") == "no"]
 
     print(f"💾 Found {len(fresh_jobs)} NEW jobs! Saving locally to {output_filename}...")
     print(f"🗂️ Current day folder: {run_paths['day_dir']}")
     print("🧾 Local history policy: keep all scraped rows (no retention purge).")
-    print(f"📌 Total saved jobs: {len(final_jobs)}")
-    print(f"✅ Relevant (contains target skill): {len(relevant_jobs)}")
-    print(f"📁 Non-relevant (no target skill): {len(non_relevant_jobs)}")
+    print(f"🎯 Relevant IT jobs after filtering: {len(relevant_jobs_only)} / {len(final_jobs_with_relevance)}")
+    print(f"🗂️ Non-relevant jobs saved separately: {len(non_relevant_jobs_only)}")
     
-    save_jobs_csv(output_filename, relevant_jobs)
-    save_jobs_csv(non_relevant_output_filename, non_relevant_jobs)
-    save_jobs_csv(run_paths["run_relevant"], relevant_jobs)
-    save_jobs_csv(run_paths["run_non_relevant"], non_relevant_jobs)
+    save_jobs_csv(output_filename, relevant_jobs_only)
+    save_jobs_csv(run_paths["run_relevant"], relevant_jobs_only)
 
-    if fresh_jobs:
-        fresh_relevant = [job for job in fresh_jobs if job.get("Relevance") == "relevant"]
-        fresh_non_relevant = [job for job in fresh_jobs if job.get("Relevance") == "non_relevant"]
-        upload_to_google_sheets(fresh_relevant, relevant_google_tab_name)
-        upload_to_google_sheets(fresh_non_relevant, non_relevant_google_tab_name)
+    if relevant_jobs_only:
+        # Push only NEW relevant jobs to Google Sheets.
+        fresh_jobs_with_relevance = with_relevance(fresh_jobs)
+        fresh_relevant_jobs = [job for job in fresh_jobs_with_relevance if job.get("Relevance") == "yes"]
+        upload_to_google_sheets(fresh_relevant_jobs, google_tab_name)
     else:
-        print("⚠️ No new jobs found in this run.")
+        print("⚠️ No IT-related jobs found in this run.")
+
+    save_jobs_csv(non_relevant_output_filename, non_relevant_jobs_only)
+    save_jobs_csv(run_paths["run_non_relevant"], non_relevant_jobs_only)
+    if non_relevant_jobs_only:
+        fresh_jobs_with_relevance = with_relevance(fresh_jobs)
+        fresh_non_relevant_jobs = [job for job in fresh_jobs_with_relevance if job.get("Relevance") == "no"]
+        upload_to_google_sheets(fresh_non_relevant_jobs, non_relevant_google_tab_name)
 
 if __name__ == '__main__':
     if UPLOAD_ONLY_MODE:
         upload_only_paths = resolve_upload_only_csv_paths(datetime.now(timezone.utc))
-        upload_csv_to_google_sheets(upload_only_paths["relevant"], "Werkstudent Jobs (Relevant)")
-        upload_csv_to_google_sheets(upload_only_paths["non_relevant"], "Werkstudent Jobs (Non Relevant)")
+        upload_csv_to_google_sheets(upload_only_paths["relevant"], "Werkstudent Jobs (Live)")
+        upload_csv_to_google_sheets(upload_only_paths["non_relevant"], "Non Relevance Werkstudent Jobs (Live)")
     else:
         scrape_linkedin_jobs()
