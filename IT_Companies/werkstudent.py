@@ -97,32 +97,6 @@ def debug_log(message):
         print(f"[DEBUG] {message}")
 
 
-def load_user_agents():
-    """Load user agents from useragents.txt file."""
-    useragents_file = os.path.join(BASE_DIR, "useragents.txt")
-    if not os.path.exists(useragents_file):
-        debug_log(f"User agents file not found: {useragents_file}")
-        return []
-    try:
-        with open(useragents_file, 'r') as f:
-            user_agents = [line.strip() for line in f if line.strip()]
-        debug_log(f"Loaded {len(user_agents)} user agents")
-        return user_agents
-    except Exception as e:
-        debug_log(f"Error loading user agents: {e}")
-        return []
-
-
-def get_random_user_agent():
-    """Get a random user agent from the list."""
-    user_agents = load_user_agents()
-    if user_agents:
-        selected = random.choice(user_agents)
-        debug_log(f"Selected user agent: {selected[:50]}...")
-        return selected
-    return None
-
-
 def human_pause(delay_range, reason=""):
     """Sleep with jitter to avoid fully deterministic timing between actions."""
     low, high = delay_range
@@ -986,11 +960,7 @@ def scrape_linkedin_jobs():
         options = webdriver.ChromeOptions()
         profile_path = os.path.join(BASE_DIR, "chrome_linkedin_profile")
         options.add_argument(f"user-data-dir={profile_path}")
-
-        # Set a random user agent
-        user_agent = get_random_user_agent()
-        if user_agent:
-            options.add_argument(f"user-agent={user_agent}")
+        options.add_argument("profile-directory=Default")
 
         # Stability flags for VM/cron environments.
         options.add_argument("--no-sandbox")
