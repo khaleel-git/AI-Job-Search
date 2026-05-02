@@ -204,6 +204,31 @@ def log_sent_email(log_file, email):
     with open(log_file, "a", encoding="utf-8") as f:
         f.write(f"{email.strip().lower()}\n")
 
+
+def connect_smtp(context):
+    """Create and authenticate a Gmail SMTP SSL connection."""
+    server = smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context, timeout=30)
+    server.login(SENDER_EMAIL, APP_PASSWORD)
+    return server
+
+
+def ensure_smtp_connected(server, context):
+    """Return a live SMTP connection, reconnecting if dropped."""
+    if server is None:
+        return connect_smtp(context)
+
+    try:
+        code, _ = server.noop()
+        if code != 250:
+            raise smtplib.SMTPServerDisconnected(f"NOOP returned unexpected status: {code}")
+        return server
+    except (smtplib.SMTPServerDisconnected, smtplib.SMTPException, OSError):
+        try:
+            server.quit()
+        except Exception:
+            pass
+        return connect_smtp(context)
+
 def main():
     if not validate_config():
         return
@@ -217,49 +242,66 @@ def main():
     already_sent = get_already_sent_emails(SENT_LOG_FILE)
     
     # Filter down to only those we haven't emailed yet
-    pending_recipients = [r for r in all_recipients if r.lower() not in already_sent]
+    already_sent_in_list = {r.lower() for r in all_recipients if r.lower() in already_sent}
+    pending_recipients = [r for r in all_recipients if r.lower() not in already_sent_in_list]
 
     if not pending_recipients:
         print(f"✅ All {len(all_recipients)} recipients in your list have already been emailed. Exiting.")
         return
 
     print(f"Found {len(all_recipients)} total recipients in TXT file.")
-    print(f"Skipping {len(already_sent)} already emailed.")
+    print(f"Skipping {len(already_sent_in_list)} already emailed.")
     print(f"Preparing to send to {len(pending_recipients)} NEW recipients...\n")
     
     # Connect to Google SMTP server
     context = ssl.create_default_context()
     
+    server = None
+
     try:
-        # Using context management ensures the connection closes cleanly
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
-            server.login(SENDER_EMAIL, APP_PASSWORD)
-            print("✅ Successfully logged into Gmail SMTP server.")
-            
-            for index, recipient in enumerate(pending_recipients):
-                print(f"[{index + 1}/{len(pending_recipients)}] Sending to {recipient}...")
-                
+        server = connect_smtp(context)
+        print("✅ Successfully logged into Gmail SMTP server.")
+
+        for index, recipient in enumerate(pending_recipients):
+            print(f"[{index + 1}/{len(pending_recipients)}] Sending to {recipient}...")
+
+            try:
+                server = ensure_smtp_connected(server, context)
+
+                # Create the message
+                msg = create_email(recipient)
+
+                # Send the email
+                server.sendmail(SENDER_EMAIL, recipient, msg.as_string())
+
+                # LOG the success immediately so we don't email them again if the script crashes
+                log_sent_email(SENT_LOG_FILE, recipient)
+                print("   -> 🚀 Sent and logged successfully")
+
+            except (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError, smtplib.SMTPException, OSError) as e:
+                print(f"   -> ⚠ SMTP connection issue for {recipient}: {e}")
+                print("   -> Reconnecting and retrying once...")
+
                 try:
-                    # Create the message
+                    server = connect_smtp(context)
                     msg = create_email(recipient)
-                    
-                    # Send the email
                     server.sendmail(SENDER_EMAIL, recipient, msg.as_string())
-                    
-                    # LOG the success immediately so we don't email them again if the script crashes
                     log_sent_email(SENT_LOG_FILE, recipient)
-                    print(f"   -> 🚀 Sent and logged successfully")
-                
-                except Exception as e:
-                    print(f"   -> ❌ Failed to send to {recipient}: {e}")
-                    continue # Skip delay on failure and move to next
-                
-                # Anti-Spam human delay (skip delay after the very last email)
-                if index < len(pending_recipients) - 1:
-                    # Random delay between 60 and 150 seconds (1 to 2.5 minutes)
-                    delay = random.uniform(60, 150)
-                    print(f"   -> ⏳ Pausing for {int(delay)} seconds to mimic human sending...\n")
-                    time.sleep(delay)
+                    print("   -> 🚀 Sent successfully after reconnect")
+                except Exception as retry_error:
+                    print(f"   -> ❌ Failed after reconnect for {recipient}: {retry_error}")
+                    continue
+
+            except Exception as e:
+                print(f"   -> ❌ Failed to send to {recipient}: {e}")
+                continue
+
+            # Anti-Spam human delay (skip delay after the very last email)
+            if index < len(pending_recipients) - 1:
+                # Random delay between 60 and 150 seconds (1 to 2.5 minutes)
+                delay = random.uniform(60, 150)
+                print(f"   -> ⏳ Pausing for {int(delay)} seconds to mimic human sending...\n")
+                time.sleep(delay)
                     
     except smtplib.SMTPAuthenticationError as auth_error:
         details = ""
@@ -277,6 +319,12 @@ def main():
             print(f"   Gmail says: {details}")
     except Exception as e:
         print(f"❌ A critical error occurred: {e}")
+    finally:
+        if server is not None:
+            try:
+                server.quit()
+            except Exception:
+                pass
 
     print("\n🎉 Process completed!")
 

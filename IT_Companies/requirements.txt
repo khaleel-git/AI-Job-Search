@@ -1,3 +1,5 @@
 selenium
-google-auth-oauthlib
 gspread
+google-auth
+google-auth-oauthlib
+google-api-python-client
