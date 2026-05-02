@@ -1,18 +1,40 @@
+#!/usr/bin/env python3
+"""
+LinkedIn Werkstudent Job Scraper
+=================================
+Platform  : Linux (headless or GUI)
+Goal      : Surface 25+ high-quality targeted jobs per day
+Scope     : LinkedIn only (career pages = separate script)
+
+What it does:
+- Searches LinkedIn with Berlin-focused + broad keywords
+- Extracts job description, classifies relevance (3 tiers)
+- Tags location zone (Berlin / Remote / Near / Stretch / Other)
+- Deduplicates across runs using Apply Link as key
+- Saves to timestamped CSV + canonical CSV
+- Uploads fresh jobs to Google Sheets
+"""
+
 import csv
-import time
-import sys
 import os
 import re
+import sys
+import time
 import random
 from datetime import datetime, timezone
 from urllib.parse import urlencode
+
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException, WebDriverException
+from selenium.common.exceptions import (
+    TimeoutException,
+    NoSuchElementException,
+    StaleElementReferenceException,
+    WebDriverException,
+)
 
-# --- NEW GOOGLE SHEETS OAUTH IMPORTS ---
 try:
     import gspread
     from google.oauth2.credentials import Credentials
@@ -20,588 +42,471 @@ try:
     from google.auth.transport.requests import Request
     GSHEETS_AVAILABLE = True
 except ImportError:
-    gspread = None
-    Credentials = None
-    InstalledAppFlow = None
-    Request = None
+    gspread = Credentials = InstalledAppFlow = Request = None
     GSHEETS_AVAILABLE = False
 
-# Change only this value before running: "data", "devops", or "both"
-RUN_MODE = "both"  # Options: "devops", "data", "both"
 
-# ⚠️ DEVOPS_SEARCH_KEYWORDS: TESTING STATE
-# Currently limited to 1 keyword for initial testing.
-# Uncomment additional keywords below as needed to expand search scope.
-DEVOPS_SEARCH_KEYWORDS = [
-    # --- Werkstudent (German) ---
-    "Werkstudent DevOps",
-    "Werkstudent DevOps Cloud",
-    "Werkstudent Platform Engineer",
-    "Werkstudent Platform Engineering",
-    "Werkstudent Infrastructure",
-    "Werkstudent Cloud",
-    "Werkstudent Cloud Engineer",
-    "Werkstudent Site Reliability Engineer",
-    "Werkstudent SRE",
-    "Werkstudent CI/CD",
-    "Werkstudent Kubernetes",
-    "Werkstudent Terraform",
-    "Werkstudent Automation Engineer",
-    "Werkstudent Monitoring",
-    # --- Werkstudentin (German feminine form) ---
-    "Werkstudentin DevOps",
-    "Werkstudentin Cloud",
-    # --- Working Student (English) ---
-    "Working Student DevOps",
-    "Working Student Platform Engineer",
-    "Working Student Platform Engineering",
-    "Working Student Infrastructure",
-    "Working Student Cloud",
-    "Working Student Cloud Engineer",
-    "Working Student Site Reliability Engineer",
-    "Working Student SRE",
-    "Working Student CI/CD",
-    "Working Student Kubernetes",
-    "Working Student Terraform",
-    "Working Student Automation Engineer",
-    "Working Student Monitoring"
+# ===========================================================================
+# CONFIGURATION
+# ===========================================================================
+
+UPLOAD_ONLY_MODE = False  # True = skip scraping, only push existing CSV to Sheets
+DEBUG_MODE       = False  # True = print verbose step logs
+
+# --- LinkedIn Search ---
+# Specific keywords first (better signal), broad last (catch-all)
+SEARCH_KEYWORDS = [
+    "working student data engineer Berlin",
+    "werkstudent python sql berlin",
+    "werkstudent data analytics berlin",
+    "working student analytics berlin english",
+    "werkstudent data science berlin",
+    "working student",
+    "werkstudent",
 ]
 
-DATA_SEARCH_KEYWORDS = [
-    # --- Werkstudent (German) ---
-    "Werkstudent Python AI",
-    "Werkstudent Data Engineering",
-    "Werkstudent Data Engineer",
-    "Werkstudent Data Analyst",
-    "Werkstudent Data Science",
-    "Werkstudent Analytics",
-    "Werkstudent Machine Learning",
-    "Werkstudent ML",
-    "Werkstudent KI",
-    "Werkstudent AI",
-    "Werkstudent NLP",
-    "Werkstudent MLOps",
-    "Werkstudent Business Intelligence",
-    "Werkstudent BI",
-    "Werkstudent Datenanalyse",
-    "Werkstudent Daten",
-    # --- Werkstudentin (German feminine form) ---
-    "Werkstudentin Data",
-    "Werkstudentin Machine Learning",
-    # --- Working Student (English) ---
-    "Working Student Data Engineer",
-    "Working Student Data Engineering",
-    "Working Student Data Engineer",
-    "Working Student Data Analyst",
-    "Working Student Data Science",
-    "Working Student Analytics",
-    "Working Student Machine Learning",
-    "Working Student ML",
-    "Working Student KI",
-    "Working Student AI",
-    "Working Student NLP",
-    "Working Student MLOps",
-    "Working Student Business Intelligence",
-    "Working Student BI"
-]
+LOCATION              = "Berlin, Germany"
+TIME_FILTER           = "r86400"        # past 24 hours — keeps results fresh
+TIME_FILTER_LABEL     = "Past 24 Hours"
+MAX_PAGES_PER_KEYWORD = 3               # freshest jobs are on page 1; 3 is enough
+JOB_TYPE_FILTER       = ""             # "" = all types; "P" = part-time only
 
-def unique_keywords(keywords):
-    """Return de-duplicated keywords preserving insertion order."""
-    seen = set()
-    ordered = []
-    for kw in keywords:
-        normalized = kw.strip().lower()
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        ordered.append(kw)
-    return ordered
+# --- Timing (anti-bot) ---
+WAIT_SECONDS          = 15
+ACTION_DELAY          = (1.5, 3.5)
+PAGE_TRANSITION_DELAY = (2.0, 4.5)
+SCROLL_PAUSE          = (0.7, 1.5)
+CLICK_PAUSE           = (0.2, 0.6)
+KEYWORD_COOLDOWN_EVERY = 4             # pause every N keywords
+KEYWORD_COOLDOWN_RANGE = (15.0, 28.0)
 
+# --- Paths ---
+BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
+JOBS_DIR  = os.path.join(BASE_DIR, "Jobs")
 
-normalized_mode = (RUN_MODE or "").strip().lower()
-if normalized_mode == "data":
-    SEARCH_KEYWORDS = unique_keywords(DATA_SEARCH_KEYWORDS)
-elif normalized_mode == "devops":
-    SEARCH_KEYWORDS = unique_keywords(DEVOPS_SEARCH_KEYWORDS)
-elif normalized_mode == "both":
-    SEARCH_KEYWORDS = unique_keywords(DATA_SEARCH_KEYWORDS + DEVOPS_SEARCH_KEYWORDS)
-else:
-    print(f"⚠️ Unknown RUN_MODE='{RUN_MODE}'. Falling back to 'both'.")
-    SEARCH_KEYWORDS = unique_keywords(DATA_SEARCH_KEYWORDS + DEVOPS_SEARCH_KEYWORDS)
-
-LOCATION = "Germany"
-JOB_TYPE_FILTER = "P"  # LinkedIn: part-time only
-TIME_FILTER = "r86400"
-TIME_FILTER_LABEL = "Past 24 Hours"
-STRICT_GERMANY_LOCATION = True
-WAIT_SECONDS = 15
-MAX_PAGES_PER_KEYWORD = 1  # Quality over quantity: 1 page captures most-relevant (fresh) jobs + faster execution
-RETENTION_HOURS = 24
 SCRAPED_DATE_FORMAT = "%Y-%m-%d %H:%M"
-DEBUG_MODE = True
-ACTION_DELAY_RANGE_SECONDS = (1.2, 3.4)
-PAGE_TRANSITION_DELAY_RANGE_SECONDS = (1.8, 4.2)
-KEYWORD_COOLDOWN_EVERY = 5
-KEYWORD_COOLDOWN_RANGE_SECONDS = (14.0, 24.0)
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_FIELDNAMES = [
-    "Scraped Date",
-    "Time Filter",
-    "Keyword",
-    "Job Title",
-    "Company",
-    "Location",
-    "Apply Link",
-    "Relevance",
+
+# --- Google Sheets ---
+GOOGLE_SHEET_ID = "1EtJXQmaOu2M51KAQ-KbXF_MiWaVOoVx7oE_xRrMG76o"
+GOOGLE_SCOPES   = ["https://www.googleapis.com/auth/spreadsheets"]
+SHEET_RELEVANT      = "Werkstudent Jobs (Relevant)"
+SHEET_NON_RELEVANT  = "Werkstudent Jobs (Non Relevant)"
+
+SHEET_HEADER = [
+    "Scraped Date", "Time Filter", "Keyword",
+    "Job Title", "Company", "Location", "Location_Zone",
+    "Apply Link", "Skills Found", "German_Level",
+    "Relevance_Score", "Relevance",
 ]
 
-# Google Sheets Configuration
-GOOGLE_SHEET_ID = "1EtJXQmaOu2M51KAQ-KbXF_MiWaVOoVx7oE_xRrMG76o"
-GOOGLE_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+OUTPUT_FIELDNAMES = SHEET_HEADER  # CSV columns match sheet columns
 
-JOB_CARD_SELECTOR = "div.base-search-card, li.jobs-search-results__list-item, div.job-card-container"
-TITLE_SELECTOR = "h3.base-search-card__title, a.job-card-list__title, a.job-card-container__link strong"
+# --- LinkedIn CSS selectors ---
+# Multiple fallbacks per element — LinkedIn changes these regularly
+JOB_CARD_SELECTOR = (
+    "div.base-search-card, "
+    "li.jobs-search-results__list-item, "
+    "div.job-card-container"
+)
+TITLE_SELECTOR = (
+    "h3.base-search-card__title, "
+    "a.job-card-list__title, "
+    "a.job-card-container__link strong"
+)
 COMPANY_SELECTOR = (
     "h4.base-search-card__subtitle, "
     "span.job-card-container__primary-description, "
     ".job-card-container__company-name, "
-    ".artdeco-entity-lockup__subtitle, "
     ".artdeco-entity-lockup__subtitle span[aria-hidden='true'], "
     ".job-card-list__company-name"
 )
-LOCATION_SELECTOR = "span.job-search-card__location, ul.job-card-container__metadata-wrapper li"
-LINK_SELECTOR = "a.base-card__full-link, a.job-card-list__title, a.job-card-container__link"
-PAGINATION_CONTAINER_SELECTOR = "div.jobs-search-pagination"
+LOCATION_SELECTOR = (
+    "span.job-search-card__location, "
+    "ul.job-card-container__metadata-wrapper li"
+)
+LINK_SELECTOR = (
+    "a.base-card__full-link, "
+    "a.job-card-list__title, "
+    "a.job-card-container__link"
+)
+DESCRIPTION_SELECTORS = (
+    "div.show-more-less-html__markup",
+    "div.jobs-description__content",
+    "div.jobs-box__html-content",
+)
+PAGINATION_SELECTOR = "div.jobs-search-pagination"
+LIST_SCROLL_SELECTORS = (
+    ".scaffold-layout__list",
+    ".jobs-search-results-list",
+    ".jobs-search-results-list__list-container",
+)
 
 
-def debug_log(message):
+# ===========================================================================
+# LOCATION ZONES
+# Ranked by commute viability from Berlin/Cottbus.
+# Checked in order: Remote → Zone1 → Zone2 → Zone3 → Other
+# ===========================================================================
+
+_ZONE_REMOTE = [
+    "remote", "homeoffice", "home office",
+    "anywhere", "deutschlandweit",
+]
+_ZONE1 = [
+    "berlin", "potsdam", "cottbus", "falkensee", "oranienburg",
+    "bernau", "erkner", "strausberg", "ludwigsfelde", "teltow",
+    "zossen", "hennigsdorf", "velten", "nauen", "eberswalde",
+    "neuruppin", "rathenow",
+]
+_ZONE2 = [  # ~1-2 hr by train
+    "leipzig", "halle", "dresden", "hamburg", "hannover",
+    "magdeburg", "rostock", "erfurt", "jena", "chemnitz",
+    "schwerin", "braunschweig", "wolfsburg",
+]
+_ZONE3 = [  # ~2-3 hr, stretch
+    "cologne", "koeln", "köln", "duesseldorf", "düsseldorf",
+    "frankfurt", "munich", "muenchen", "münchen", "stuttgart",
+    "nuremberg", "nuernberg", "nürnberg", "dortmund", "essen",
+    "bremen", "wiesbaden", "mainz", "mannheim", "heidelberg",
+    "karlsruhe", "freiburg", "bonn", "bielefeld", "muenster",
+    "münster", "augsburg",
+]
+
+ZONE_ORDER = {
+    "Zone1_Berlin": 0,
+    "Remote":       1,
+    "Zone2_Near":   2,
+    "Zone3_Stretch":3,
+    "Other":        4,
+}
+
+
+# ===========================================================================
+# SKILL PATTERNS
+# Core skills count 2x in scoring. Supporting skills count 1x.
+# Jobs with 0 core + <2 supporting = non_relevant (filtered out).
+# ===========================================================================
+
+_CORE_SKILLS = [
+    (r"\bpython\b",           "Python"),
+    (r"\bsql\b",              "SQL"),
+    (r"\bdata\s+engineering\b","Data Engineering"),
+    (r"\betl\b",              "ETL"),
+    (r"\bairflow\b",          "Airflow"),
+    (r"\bpipeline\b",         "Pipeline"),
+    (r"\bdata\s+science\b",   "Data Science"),
+    (r"\bmachine\s+learning\b","Machine Learning"),
+]
+_SUPPORTING_SKILLS = [
+    (r"\bpower\s*bi\b",       "Power BI"),
+    (r"\btableau\b",          "Tableau"),
+    (r"\baws\b",              "AWS"),
+    (r"\bazure\b",            "Azure"),
+    (r"\bgcp\b|\bgoogle\s+cloud\b", "GCP"),
+    (r"\bdata\s+analytics?\b","Data Analytics"),
+    (r"\bdata\s+analysis\b",  "Data Analysis"),
+    (r"\bpandas\b",           "Pandas"),
+    (r"\bnumpy\b",            "NumPy"),
+    (r"\blinux\b",            "Linux"),
+    (r"\bartificial\s+intelligence\b|\bai\b", "AI"),
+    (r"k[uü]nstliche\s+intelligenz|\bki\b",   "KI"),
+    (r"\bexcel\b",            "Excel"),
+]
+_EXCLUDE_TITLE_PATTERNS = [
+    r"\bdatenschutz\b",
+    r"\bcyber\s*security\b",
+    r"\bembedded\b",
+    r"\bhardware\b",
+    r"\baccounting\b",
+    r"\bsales\b",
+    r"\bmarketing\b",
+    r"\bsocial\s+media\b",
+    r"\beinkauf\b",
+    r"\blogistik\b",
+    r"\bpcb\b",
+    r"\breception\b",
+    r"\bcustomer\s+service\b",
+    r"\bhuman\s+resources\b",
+]
+
+
+# ===========================================================================
+# HELPERS
+# ===========================================================================
+
+def debug(msg):
     if DEBUG_MODE:
-        print(f"[DEBUG] {message}")
+        print(f"[DEBUG] {msg}")
 
 
-def human_pause(delay_range, reason=""):
-    """Sleep with jitter to avoid fully deterministic timing between actions."""
-    low, high = delay_range
-    if high < low:
-        low, high = high, low
-    duration = random.uniform(low, high)
-    if reason:
-        debug_log(f"Pause {duration:.2f}s ({reason})")
-    time.sleep(duration)
-
-TITLE_MATCH_TOKENS = ("werkstudent", "werkstudentin", "working student", "student worker", "intern")
-GERMANY_LOCATION_TOKENS = (
-    "germany",
-    "deutschland",
-    "berlin",
-    "munich",
-    "muenchen",
-    "hamburg",
-    "frankfurt",
-    "cologne",
-    "koln",
-    "stuttgart",
-    "dusseldorf",
-    "dortmund",
-    "essen",
-    "bremen",
-    "leipzig",
-    "hanover",
-    "hannover",
-    "nuremberg",
-    "nuernberg",
-    "karlsruhe",
-)
-
-GERMANY_STATE_TOKENS = (
-    "baden-wurttemberg",
-    "baden wuerttemberg",
-    "baden-wuerttemberg",
-    "bavaria",
-    "bayern",
-    "berlin",
-    "brandenburg",
-    "bremen",
-    "hamburg",
-    "hesse",
-    "hessen",
-    "lower saxony",
-    "niedersachsen",
-    "mecklenburg-western pomerania",
-    "mecklenburg vorpommern",
-    "north rhine-westphalia",
-    "north rhine westphalia",
-    "nordrhein-westfalen",
-    "nordrhein westfalen",
-    "nrw",
-    "rhineland-palatinate",
-    "rhineland palatinate",
-    "rheinland-pfalz",
-    "rheinland pfalz",
-    "saarland",
-    "saxony",
-    "sachsen",
-    "saxony-anhalt",
-    "saxony anhalt",
-    "sachsen-anhalt",
-    "sachsen anhalt",
-    "schleswig-holstein",
-    "schleswig holstein",
-    "thuringia",
-    "thueringen",
-    "thuringen",
-)
-
-IT_RELEVANT_TITLE_PHRASES = (
-    "software",
-    "softwareentwicklung",
-    "software engineer",
-    "software engineering",
-    "software developer",
-    "developer",
-    "development",
-    "programming",
-    "full-stack",
-    "fullstack",
-    "backend",
-    "frontend",
-    "web development",
-    "qa",
-    "quality assurance",
-    "testing",
-    "automation",
-    "it-engineering",
-    "it engineering",
-    "systemintegration",
-    "system integration",
-    "system engineer",
-    "api-management",
-    "api management",
-    "cloud",
-    "infrastructure",
-    "platform",
-    "site reliability",
-    "sre",
-    "devops",
-    "security",
-    "cyber security",
-    "cybersecurity",
-    "identity access",
-    "data",
-    "data engineering",
-    "data engineer",
-    "data analyst",
-    "data science",
-    "data platform",
-    "data warehouse",
-    "business intelligence",
-    "analytics engineering",
-    "datenanalyse",
-    "datenanalyst",
-    "dateningenieur",
-    "datenplattform",
-    "mlops",
-    "machine learning",
-    "devops",
-    "site reliability",
-    "sre",
-    "platform engineer",
-    "platform engineering",
-    "cloud engineer",
-    "infrastructure",
-    "kubernetes",
-    "terraform",
-    "ci/cd",
-    "ci cd",
-)
-
-IT_RELEVANT_WORD_TOKENS = (
-    "it",
-    "ai",
-    "ml",
-    "qa",
-    "api",
-    "sre",
-)
-
-NON_IT_TITLE_PHRASES = (
-    "hr",
-    "human resources",
-    "people & culture",
-    "people service",
-    "recruiting",
-    "employer branding",
-    "active sourcing",
-    "sales",
-    "telesales",
-    "marketing",
-    "influencer",
-    "campaign",
-    "communication",
-    "customer success",
-    "finance",
-    "faktura",
-    "procurement",
-    "legal",
-    "logistik",
-    "logistics",
-    "asset management",
-    "immobilien",
-    "facility management",
-    "bauingenieur",
-    "maschinenbau",
-)
+def pause(delay_range, reason=""):
+    lo, hi = delay_range
+    if hi < lo:
+        lo, hi = hi, lo
+    secs = random.uniform(lo, hi)
+    debug(f"Pause {secs:.2f}s — {reason}")
+    time.sleep(secs)
 
 
-def contains_whole_word(text, token):
-    return bool(re.search(rf"\b{re.escape(token)}\b", text))
+def _normalize(text):
+    """Lowercase + fold German umlauts for location matching."""
+    t = (text or "").strip().lower()
+    return (t.replace("ä", "ae").replace("ö", "oe")
+             .replace("ü", "ue").replace("ß", "ss"))
 
 
-def normalize_geo_text(text):
-    normalized = (text or "").strip().lower()
-    return (
-        normalized
-        .replace("ä", "ae")
-        .replace("ö", "oe")
-        .replace("ü", "ue")
-        .replace("ß", "ss")
+def classify_location_zone(location_text):
+    n = _normalize(location_text)
+    for tok in _ZONE_REMOTE:
+        if tok in n:
+            return "Remote"
+    for tok in _ZONE1:
+        if tok in n:
+            return "Zone1_Berlin"
+    for tok in _ZONE2:
+        if tok in n:
+            return "Zone2_Near"
+    for tok in _ZONE3:
+        if tok in n:
+            return "Zone3_Stretch"
+    return "Other"
+
+
+def extract_skills(description):
+    text = (description or "").lower()
+    found = []
+    for pattern, label in _CORE_SKILLS + _SUPPORTING_SKILLS:
+        if re.search(pattern, text) and label not in found:
+            found.append(label)
+    return ", ".join(found)
+
+
+def classify_german(description):
+    text = (description or "").lower()
+    required = [
+        r"\bflie(ss|ß)end\s+deutsch\b",
+        r"\bverhandlungssicher\b",
+        r"\bsehr\s+gute\s+deutschkenntnisse\b",
+        r"\bdeutsch\s+in\s+wort\s+und\s+schrift\b",
+        r"\bgerman\s+(required|mandatory)\b",
+        r"\b(b2|c1|c2)\b.{0,30}(deutsch|german)",
+        r"(deutsch|german).{0,30}\b(b2|c1|c2)\b",
+    ]
+    preferred = [
+        r"\bgute\s+deutschkenntnisse\b",
+        r"\bdeutschkenntnisse.{0,40}(von\s+vorteil|wünschenswert|plus|nice)",
+        r"\bgerman.{0,30}(nice\s+to\s+have|plus|preferred|advantage)\b",
+        r"\b(a1|a2|b1)\b.{0,30}(deutsch|german)",
+    ]
+    for p in required:
+        if re.search(p, text):
+            return "required"
+    for p in preferred:
+        if re.search(p, text):
+            return "preferred"
+    return "not_required"
+
+
+def classify_relevance(title, description):
+    """
+    Returns (relevance_label, score).
+    relevance_label: 'high_relevant' | 'relevant' | 'non_relevant'
+    Score = core_hits*2 + supporting_hits (higher = better match).
+    """
+    title_lower = (title or "").lower()
+    text = (description or "").lower()
+
+    # Reject by title first — fast filter
+    for pat in _EXCLUDE_TITLE_PATTERNS:
+        if re.search(pat, title_lower):
+            debug(f"Title excluded: {title!r} matched {pat}")
+            return "non_relevant", 0.0
+
+    core_hits = sum(1 for p, _ in _CORE_SKILLS if re.search(p, text))
+    supporting_hits = sum(1 for p, _ in _SUPPORTING_SKILLS if re.search(p, text))
+    score = float(core_hits * 2 + supporting_hits)
+
+    if core_hits >= 1:
+        return "high_relevant", score
+    if supporting_hits >= 2:
+        return "relevant", score
+    return "non_relevant", 0.0
+
+
+# ===========================================================================
+# SELENIUM HELPERS
+# ===========================================================================
+
+def build_driver():
+    """
+    Build Chrome driver for Ubuntu GUI (non-headless).
+    Persistent profile keeps LinkedIn session alive across runs —
+    you only need to log in manually once.
+    """
+    opts = webdriver.ChromeOptions()
+
+    # Persistent Chrome profile — stores LinkedIn login session
+    profile_path = os.path.join(BASE_DIR, "chrome_linkedin_profile")
+    opts.add_argument(f"--user-data-dir={profile_path}")
+    opts.add_argument("--profile-directory=Default")
+
+    # Ubuntu / Linux stability flags
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")
+    # NOTE: --disable-gpu intentionally omitted — causes rendering issues on Ubuntu GUI
+    # NOTE: --disable-extensions intentionally omitted — can break LinkedIn scripts
+
+    # Anti-bot: hide webdriver fingerprint
+    opts.add_argument("--disable-blink-features=AutomationControlled")
+    opts.add_experimental_option("excludeSwitches", ["enable-automation"])
+    opts.add_experimental_option("useAutomationExtension", False)
+
+    # Window size — good resolution helps LinkedIn render all elements correctly
+    opts.add_argument("--window-size=1920,1080")
+
+    driver = webdriver.Chrome(options=opts)
+    driver.maximize_window()
+
+    # Additional fingerprint mask via CDP
+    driver.execute_cdp_cmd(
+        "Page.addScriptToEvaluateOnNewDocument",
+        {"source": "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"},
     )
+    return driver
 
 
-def first_text(container, selector, default):
-    elements = container.find_elements(By.CSS_SELECTOR, selector)
-    if not elements:
-        return default
-    text = elements[0].text.strip()
-    return text if text else default
+def first_text(container, selector, default=""):
+    els = container.find_elements(By.CSS_SELECTOR, selector)
+    for el in els:
+        t = (el.text or "").strip()
+        if t:
+            return t
+    return default
 
 
 def first_href(container, selector):
-    elements = container.find_elements(By.CSS_SELECTOR, selector)
-    if not elements:
-        return ""
-    href = elements[0].get_attribute("href") or ""
-    return href.split("?")[0].strip()
+    els = container.find_elements(By.CSS_SELECTOR, selector)
+    for el in els:
+        href = (el.get_attribute("href") or "").strip()
+        if href:
+            return href.split("?")[0]
+    return ""
 
 
-def should_keep_title(title):
-    normalized = title.lower()
-    return any(token in normalized for token in TITLE_MATCH_TOKENS)
-
-
-def is_it_related(title, keyword=""):
-    """Return yes/no relevance for IT jobs (programming/devops/data/ml) based on title and keyword."""
-    title_normalized = (title or "").strip().lower()
-    keyword_normalized = (keyword or "").strip().lower()
-
-    if any(phrase in title_normalized for phrase in NON_IT_TITLE_PHRASES):
-        return "no"
-
-    if any(phrase in title_normalized for phrase in IT_RELEVANT_TITLE_PHRASES):
-        return "yes"
-
-    if any(contains_whole_word(title_normalized, token) for token in IT_RELEVANT_WORD_TOKENS):
-        return "yes"
-
-    # Fallback for generic titles from IT-focused keywords.
-    keyword_signals = (
-        "data",
-        "devops",
-        "mlops",
-        "machine learning",
-        "software",
-        "developer",
-        "engineering",
-        "programming",
-        "cloud",
-        "site reliability",
-        "platform engineer",
-        "cloud engineer",
-        "kubernetes",
-        "terraform",
-    )
-    keyword_word_signals = ("it", "ai", "sre")
-    keyword_has_it_signal = any(signal in keyword_normalized for signal in keyword_signals) or any(
-        contains_whole_word(keyword_normalized, signal) for signal in keyword_word_signals
-    )
-    if keyword_has_it_signal:
-        if any(token in title_normalized for token in ("engineering", "engineer", "developer", "software", "platform", "cloud", "automation", "analytics", "data", "testing")):
-            return "yes"
-        if any(contains_whole_word(title_normalized, token) for token in IT_RELEVANT_WORD_TOKENS):
-            return "yes"
-
-    return "no"
-
-
-def with_relevance(rows):
-    enriched = []
-    for row in rows:
-        current = dict(row)
-        current["Relevance"] = is_it_related(current.get("Job Title", ""), current.get("Keyword", ""))
-        enriched.append(current)
-    return enriched
-
-
-def is_germany_location(location_text):
-    normalized = normalize_geo_text(location_text)
-    if not normalized:
-        return False
-
-    if any(token in normalized for token in GERMANY_LOCATION_TOKENS):
-        return True
-
-    if any(token in normalized for token in GERMANY_STATE_TOKENS):
-        return True
-
-    return False
-
-
-def build_search_url(keyword):
-    query = urlencode(
-        {
-            "keywords": keyword,
-            "location": LOCATION,
-            "f_TPR": TIME_FILTER,
-            "f_JT": JOB_TYPE_FILTER,
-        }
-    )
-    return f"https://www.linkedin.com/jobs/search/?{query}"
-
-
-def click_jobs_page_number(driver, page_number):
-    """Click an explicit jobs pagination button by number (e.g., 2, 3)."""
-    page_text = str(page_number)
-    selectors = [
-        f"{PAGINATION_CONTAINER_SELECTOR} button.jobs-search-pagination__indicator-button[aria-label='Page {page_text}']",
-        f"{PAGINATION_CONTAINER_SELECTOR} li.jobs-search-pagination__indicator button[aria-label='Page {page_text}']",
-    ]
-    xpaths = [
-        f"//div[contains(@class,'jobs-search-pagination')]//button[@aria-label='Page {page_text}']",
-    ]
-
-    for selector in selectors:
+def scroll_list_pane(driver):
+    """Scroll the left-side job list pane to trigger lazy loading."""
+    for sel in LIST_SCROLL_SELECTORS:
         try:
-            btn = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.CSS_SELECTOR, selector)))
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
-            human_pause((0.18, 0.55), "before clicking page button")
-            driver.execute_script("arguments[0].click();", btn)
-            debug_log(f"Clicked page {page_number} using selector: {selector}")
-            return True
-        except TimeoutException:
-            continue
-        except WebDriverException:
-            continue
-
-    for xpath in xpaths:
-        try:
-            btn = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.XPATH, xpath)))
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
-            human_pause((0.18, 0.55), "before clicking page button (xpath)")
-            driver.execute_script("arguments[0].click();", btn)
-            debug_log(f"Clicked page {page_number} using xpath: {xpath}")
-            return True
-        except TimeoutException:
-            continue
-        except WebDriverException:
-            continue
-
-    debug_log(f"Failed to click page {page_number}")
-    return False
-
-
-def click_jobs_next_page(driver):
-    """Click pagination Next button."""
-    selectors = [
-        f"{PAGINATION_CONTAINER_SELECTOR} button.jobs-search-pagination__button--next",
-        f"{PAGINATION_CONTAINER_SELECTOR} button[aria-label='View next page']",
-    ]
-    xpaths = [
-        "//div[contains(@class,'jobs-search-pagination')]//button[contains(@class,'jobs-search-pagination__button--next')]",
-        "//button[@aria-label='View next page']",
-    ]
-
-    for selector in selectors:
-        try:
-            btn = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.CSS_SELECTOR, selector)))
-            if (btn.get_attribute("disabled") or "").strip().lower() in ("true", "disabled"):
-                debug_log("Next button is disabled")
-                return False
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
-            human_pause((0.18, 0.55), "before clicking next page")
-            driver.execute_script("arguments[0].click();", btn)
-            debug_log(f"Clicked next using selector: {selector}")
-            return True
-        except TimeoutException:
-            continue
-        except WebDriverException:
-            continue
-
-    for xpath in xpaths:
-        try:
-            btn = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.XPATH, xpath)))
-            if (btn.get_attribute("disabled") or "").strip().lower() in ("true", "disabled"):
-                debug_log("Next button is disabled")
-                return False
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
-            human_pause((0.18, 0.55), "before clicking next page (xpath)")
-            driver.execute_script("arguments[0].click();", btn)
-            debug_log(f"Clicked next using xpath: {xpath}")
-            return True
-        except TimeoutException:
-            continue
-        except WebDriverException:
-            continue
-    debug_log("Failed to click next page button")
-    return False
-
-
-def get_current_jobs_page(driver):
-    selectors = [
-        f"{PAGINATION_CONTAINER_SELECTOR} button.jobs-search-pagination__indicator-button--active",
-        f"{PAGINATION_CONTAINER_SELECTOR} button[aria-current='page']",
-    ]
-    for selector in selectors:
-        try:
-            el = driver.find_element(By.CSS_SELECTOR, selector)
-            label = (el.get_attribute("aria-label") or "").strip().lower()
-            match = re.search(r"page\s+(\d+)", label)
-            if match:
-                return int(match.group(1))
-            text = (el.text or "").strip()
-            if text.isdigit():
-                return int(text)
+            pane = driver.find_element(By.CSS_SELECTOR, sel)
+            driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight;", pane)
+            return
         except (NoSuchElementException, WebDriverException):
             continue
+    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
 
-    # Fallback: parse "Page X of Y" state text.
+
+def load_all_cards(driver, wait):
+    """Scroll until no new job cards appear. Returns final list of card elements."""
     try:
-        state = driver.find_element(By.CSS_SELECTOR, f"{PAGINATION_CONTAINER_SELECTOR} p.jobs-search-pagination__page-state")
-        text = (state.text or "").strip().lower()
-        match = re.search(r"page\s+(\d+)\s+of\s+(\d+)", text)
-        if match:
-            return int(match.group(1))
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, JOB_CARD_SELECTOR)))
+    except TimeoutException:
+        return []
+
+    last_count = 0
+    stagnant = 0
+    while stagnant < 4:
+        cards = driver.find_elements(By.CSS_SELECTOR, JOB_CARD_SELECTOR)
+        count = len(cards)
+        if count > last_count:
+            stagnant = 0
+            last_count = count
+        else:
+            stagnant += 1
+        scroll_list_pane(driver)
+        if cards:
+            try:
+                driver.execute_script("arguments[0].scrollIntoView({block:'end'});", cards[-1])
+            except WebDriverException:
+                pass
+        pause(SCROLL_PAUSE)
+
+    return driver.find_elements(By.CSS_SELECTOR, JOB_CARD_SELECTOR)
+
+
+def fetch_description(driver, wait, card):
+    """Click a job card to open the detail panel, return description text."""
+    try:
+        links = card.find_elements(By.CSS_SELECTOR, LINK_SELECTOR)
+        target = links[0] if links else card
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", target)
+        pause(CLICK_PAUSE)
+        driver.execute_script("arguments[0].click();", target)
+    except WebDriverException:
+        return ""
+
+    pause((0.4, 0.9))
+
+    for sel in DESCRIPTION_SELECTORS:
+        try:
+            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, sel)))
+            for el in driver.find_elements(By.CSS_SELECTOR, sel):
+                text = (el.text or "").strip()
+                if text:
+                    return text
+        except (TimeoutException, WebDriverException):
+            continue
+    return ""
+
+
+def get_page_number(driver):
+    selectors = [
+        f"{PAGINATION_SELECTOR} button.jobs-search-pagination__indicator-button--active",
+        f"{PAGINATION_SELECTOR} button[aria-current='page']",
+    ]
+    for sel in selectors:
+        try:
+            el = driver.find_element(By.CSS_SELECTOR, sel)
+            label = (el.get_attribute("aria-label") or "").lower()
+            m = re.search(r"page\s+(\d+)", label)
+            if m:
+                return int(m.group(1))
+            t = (el.text or "").strip()
+            if t.isdigit():
+                return int(t)
+        except (NoSuchElementException, WebDriverException):
+            continue
+    try:
+        state = driver.find_element(
+            By.CSS_SELECTOR,
+            f"{PAGINATION_SELECTOR} p.jobs-search-pagination__page-state",
+        )
+        m = re.search(r"page\s+(\d+)", (state.text or "").lower())
+        if m:
+            return int(m.group(1))
     except (NoSuchElementException, WebDriverException):
         pass
-
     return None
 
 
-def get_max_jobs_pages(driver):
+def get_max_pages(driver):
     try:
-        state = driver.find_element(By.CSS_SELECTOR, f"{PAGINATION_CONTAINER_SELECTOR} p.jobs-search-pagination__page-state")
-        text = (state.text or "").strip().lower()
-        match = re.search(r"page\s+\d+\s+of\s+(\d+)", text)
-        if match:
-            return int(match.group(1))
+        state = driver.find_element(
+            By.CSS_SELECTOR,
+            f"{PAGINATION_SELECTOR} p.jobs-search-pagination__page-state",
+        )
+        m = re.search(r"of\s+(\d+)", (state.text or "").lower())
+        if m:
+            return int(m.group(1))
     except (NoSuchElementException, WebDriverException):
         pass
-
-    # Fallback: highest numeric page button currently visible.
     try:
-        buttons = driver.find_elements(By.CSS_SELECTOR, f"{PAGINATION_CONTAINER_SELECTOR} button.jobs-search-pagination__indicator-button")
+        buttons = driver.find_elements(
+            By.CSS_SELECTOR,
+            f"{PAGINATION_SELECTOR} button.jobs-search-pagination__indicator-button",
+        )
         nums = []
         for btn in buttons:
-            label = (btn.get_attribute("aria-label") or "").strip().lower()
+            label = (btn.get_attribute("aria-label") or "").lower()
             m = re.search(r"page\s+(\d+)", label)
             if m:
                 nums.append(int(m.group(1)))
@@ -609,417 +514,429 @@ def get_max_jobs_pages(driver):
             return max(nums)
     except WebDriverException:
         pass
-
     return 1
 
 
-def ensure_pagination_loaded(driver):
-    """LinkedIn pagination often appears only after list pane is scrolled down."""
-    for _ in range(4):
-        scrolled = False
-        for container_selector in (
-            ".scaffold-layout__list",
-            ".jobs-search-results-list",
-            ".jobs-search-results-list__list-container",
-        ):
-            try:
-                container = driver.find_element(By.CSS_SELECTOR, container_selector)
-                driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight;", container)
-                scrolled = True
-                break
-            except (NoSuchElementException, WebDriverException):
-                continue
-
-        if not scrolled:
-            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-
+def ensure_pagination_visible(driver):
+    """Scroll until pagination controls are rendered."""
+    for _ in range(5):
+        scroll_list_pane(driver)
         try:
             WebDriverWait(driver, 2).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, f"{PAGINATION_CONTAINER_SELECTOR} p.jobs-search-pagination__page-state"))
+                EC.presence_of_element_located(
+                    (By.CSS_SELECTOR, f"{PAGINATION_SELECTOR} p.jobs-search-pagination__page-state")
+                )
             )
             return True
         except TimeoutException:
-            human_pause((0.45, 1.1), "waiting for pagination render")
-
+            pass
     return False
 
 
-def get_results_summary_text(driver):
-    selectors = [
-        ".jobs-search-results-list__title-heading small span",
-        "#results-list__title",
-    ]
-    for selector in selectors:
-        try:
-            text = (driver.find_element(By.CSS_SELECTOR, selector).text or "").strip()
-            if text:
-                return text
-        except (NoSuchElementException, WebDriverException):
-            continue
-    return ""
-
-
-def move_to_jobs_page(driver, page_number):
-    """Move to target page using page number first, then Next fallback until reached."""
-    if page_number <= 1:
+def go_to_page(driver, target_page):
+    """Navigate to a specific page number in LinkedIn job results."""
+    if target_page <= 1:
         return True
 
-    if click_jobs_page_number(driver, page_number):
+    # Try clicking the exact page button first
+    for attempt in (
+        f"{PAGINATION_SELECTOR} button[aria-label='Page {target_page}']",
+        f"//div[contains(@class,'jobs-search-pagination')]//button[@aria-label='Page {target_page}']",
+    ):
         try:
-            WebDriverWait(driver, 6).until(lambda d: get_current_jobs_page(d) == page_number)
-            debug_log(f"Reached page {page_number} via direct click")
-            return True
-        except TimeoutException:
-            human_pause((1.0, 2.2), "page switch fallback wait")
-            if get_current_jobs_page(driver) == page_number:
-                debug_log(f"Reached page {page_number} after wait fallback")
+            if attempt.startswith("//"):
+                btn = WebDriverWait(driver, 5).until(
+                    EC.element_to_be_clickable((By.XPATH, attempt))
+                )
+            else:
+                btn = WebDriverWait(driver, 5).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, attempt))
+                )
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
+            pause(CLICK_PAUSE)
+            driver.execute_script("arguments[0].click();", btn)
+            try:
+                WebDriverWait(driver, 6).until(lambda d: get_page_number(d) == target_page)
                 return True
-
-    current = get_current_jobs_page(driver) or 1
-    debug_log(f"Direct click failed, using Next fallback from page {current} to {page_number}")
-    while current < page_number:
-        if not click_jobs_next_page(driver):
-            return False
-        try:
-            WebDriverWait(driver, 6).until(lambda d: (get_current_jobs_page(d) or 0) > current)
-        except TimeoutException:
-            human_pause((1.0, 2.2), "next-page fallback wait")
-        new_current = get_current_jobs_page(driver) or current
-        if new_current <= current:
-            debug_log(f"Page did not advance (still {new_current})")
-            return False
-        debug_log(f"Advanced from page {current} to {new_current}")
-        current = new_current
-    return current == page_number
-
-
-def load_all_jobs_for_keyword(driver, wait):
-    try:
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, JOB_CARD_SELECTOR)))
-    except TimeoutException:
-        return []
-
-    print("   Scrolling to load more jobs...")
-    last_count = len(driver.find_elements(By.CSS_SELECTOR, JOB_CARD_SELECTOR))
-    stagnant_scrolls = 0
-
-    while stagnant_scrolls < 4:
-        job_cards = driver.find_elements(By.CSS_SELECTOR, JOB_CARD_SELECTOR)
-        current_count = len(job_cards)
-        if current_count <= last_count:
-            stagnant_scrolls += 1
-        else:
-            stagnant_scrolls = 0
-            last_count = current_count
-
-        scrolled = False
-        for container_selector in (
-            ".scaffold-layout__list",
-            ".jobs-search-results-list",
-            ".jobs-search-results-list__list-container",
-            "div[aria-label='Jobs search'] .scaffold-layout__list",
-        ):
-            try:
-                scroll_container = driver.find_element(By.CSS_SELECTOR, container_selector)
-                driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight;", scroll_container)
-                scrolled = True
-                break
-            except (NoSuchElementException, WebDriverException):
-                continue
-
-        if not scrolled:
-            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-
-        if job_cards:
-            try:
-                driver.execute_script("arguments[0].scrollIntoView({block: 'end'});", job_cards[-1])
-            except WebDriverException:
-                pass
-
-        debug_log(f"Scroll loop: cards={current_count}, last={last_count}, stagnant={stagnant_scrolls}")
-        human_pause((0.6, 1.4), "lazy list load")
-
-    return driver.find_elements(By.CSS_SELECTOR, JOB_CARD_SELECTOR)
-
-
-def parse_scraped_date(value):
-    text = (value or "").strip()
-    if not text:
-        return None
-    try:
-        dt = datetime.strptime(text, SCRAPED_DATE_FORMAT)
-        return dt.replace(tzinfo=timezone.utc)
-    except ValueError:
-        return None
-
-
-def is_within_retention(row, now_utc):
-    scraped_dt = parse_scraped_date(row.get("Scraped Date", ""))
-    if scraped_dt is None:
-        return False
-    age_seconds = (now_utc - scraped_dt).total_seconds()
-    return age_seconds <= RETENTION_HOURS * 3600
-
-
-def load_existing_jobs(output_filenames, now_utc):
-    existing_jobs = []
-    seen_links = set()
-    expired_count = 0
-
-    if isinstance(output_filenames, str):
-        output_filenames = [output_filenames]
-
-    for output_filename in output_filenames:
-        if not os.path.exists(output_filename):
+            except TimeoutException:
+                pause((1.0, 2.0))
+                if get_page_number(driver) == target_page:
+                    return True
+        except (TimeoutException, WebDriverException):
             continue
 
-        with open(output_filename, 'r', encoding='utf-8-sig') as infile:
-            reader = csv.DictReader(infile)
-            for row in reader:
-                if "Time Filter" not in row:
-                    row["Time Filter"] = "Unknown"
-                if "Relevance" not in row:
-                    row["Relevance"] = is_it_related(row.get("Job Title", ""), row.get("Keyword", ""))
-
-                if not is_within_retention(row, now_utc):
-                    expired_count += 1
-                    continue
-
-                apply_link = (row.get("Apply Link", "") or "").strip()
-                if not apply_link:
-                    continue
-
-                if apply_link in seen_links:
-                    continue
-
-                existing_jobs.append(row)
-
-                seen_links.add(apply_link)
-
-    return existing_jobs, seen_links, expired_count
-
-
-def save_jobs_csv(output_filename, jobs):
-    with open(output_filename, 'w', encoding='utf-8-sig', newline='') as outfile:
-        writer = csv.DictWriter(outfile, fieldnames=OUTPUT_FIELDNAMES)
-        writer.writeheader()
-        writer.writerows([{key: job.get(key, "") for key in OUTPUT_FIELDNAMES} for job in jobs])
-
-def upload_to_google_sheets(fresh_jobs, tab_name):
-    """Handles the connection and uploading of new data to Google Sheets via User OAuth."""
-    if not fresh_jobs:
-        return
-
-    print("\n☁️ Uploading new jobs to Google Sheets...")
-    
-    if not GSHEETS_AVAILABLE:
-        print("⚠️ Google Sheets upload skipped. Missing libraries: pip install gspread google-auth-oauthlib")
-        return
-         
-    try:
-        creds = None
-        token_path = os.path.join(BASE_DIR, "token.json")
-        credentials_path = os.path.join(BASE_DIR, "credentials.json")
-        
-        # The file token.json stores the user's access and refresh tokens.
-        if os.path.exists(token_path):
-            creds = Credentials.from_authorized_user_file(token_path, GOOGLE_SCOPES)
-            
-        # If there are no (valid) credentials available, let the user log in.
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-            else:
-                print("\n🔔 Google Authentication Required! A browser window should open...")
-                flow = InstalledAppFlow.from_client_secrets_file(credentials_path, GOOGLE_SCOPES)
-                creds = flow.run_local_server(port=0)
-            
-            # Save the credentials for the next run so you don't have to login again
-            with open(token_path, 'w', encoding='utf-8') as token:
-                token.write(creds.to_json())
-
-        client = gspread.authorize(creds)
-        
-        # Open the workbook
-        workbook = client.open_by_key(GOOGLE_SHEET_ID)
-        
-        # Find or Create the single "live" tab for all runs
+    # Fallback: click Next until we reach target
+    current = get_page_number(driver) or 1
+    next_selectors = [
+        f"{PAGINATION_SELECTOR} button.jobs-search-pagination__button--next",
+        f"{PAGINATION_SELECTOR} button[aria-label='View next page']",
+    ]
+    while current < target_page:
+        clicked = False
+        for sel in next_selectors:
+            try:
+                btn = WebDriverWait(driver, 5).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, sel))
+                )
+                if (btn.get_attribute("disabled") or "").lower() in ("true", "disabled"):
+                    return False
+                driver.execute_script("arguments[0].click();", btn)
+                clicked = True
+                break
+            except (TimeoutException, WebDriverException):
+                continue
+        if not clicked:
+            return False
         try:
-            worksheet = workbook.worksheet(tab_name)
-        except gspread.exceptions.WorksheetNotFound:
-            print(f"   Creating '{tab_name}' tab because it didn't exist...")
-            worksheet = workbook.add_worksheet(title=tab_name, rows="10000", cols="9")
-            worksheet.append_row(["Scraped Date", "Time Filter", "Keyword", "Job Title", "Company", "Location", "Apply Link", "Relevance"])
+            WebDriverWait(driver, 6).until(
+                lambda d: (get_page_number(d) or 0) > current
+            )
+        except TimeoutException:
+            pause((1.0, 2.0))
+        new = get_page_number(driver) or current
+        if new <= current:
+            return False
+        current = new
 
-        # Convert dictionaries to a flat list of lists for GSpread
-        rows_to_append = []
-        for job in fresh_jobs:
-            rows_to_append.append([
-                job["Scraped Date"],
-                job["Time Filter"],
-                job["Keyword"],
-                job["Job Title"],
-                job["Company"],
-                job["Location"],
-                job["Apply Link"],
-                job.get("Relevance", "no")
-            ])
-            
-        # Push data to the cloud
-        worksheet.append_rows(rows_to_append)
-        print(f"✅ Successfully added {len(fresh_jobs)} jobs to your Google Sheet!")
-        
-    except FileNotFoundError:
-        print("⚠️ 'credentials.json' not found in the folder.")
-        print("   Please download an 'OAuth 2.0 Client ID' JSON file from Google Cloud Console.")
-    except Exception as e:
-        print(f"⚠️ Google Sheets Upload Failed: {e}")
+    return current == target_page
 
-def scrape_linkedin_jobs():
-    print("🚀 Launching Chrome with Persistent Profile...\n")
-    now_utc = datetime.now(timezone.utc)
-    run_timestamp_display = now_utc.strftime(SCRAPED_DATE_FORMAT)
-    run_timestamp_slug = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M")
-    google_tab_name = "Werkstudent Jobs (Live)"  # Single live tab; appends data with run timestamps
-    output_filename = os.path.join(BASE_DIR, "Live_Werkstudent_Jobs.csv")
-    non_relevant_output_filename = os.path.join(BASE_DIR, "Live_Werkstudent_Jobs_Non_Relevant.csv")
 
-    existing_jobs, seen_links, expired_count = load_existing_jobs([
-        output_filename,
-        non_relevant_output_filename,
-    ], now_utc)
-    fresh_jobs = []
-    run_seen_links = set()
-    
-    driver = None
+# ===========================================================================
+# CSV / DEDUP HELPERS
+# ===========================================================================
+
+def build_paths(now_utc):
+    os.makedirs(JOBS_DIR, exist_ok=True)
+    day_dir = os.path.join(JOBS_DIR, now_utc.strftime("%d-%m-%Y"))
+    os.makedirs(day_dir, exist_ok=True)
+    run_time = now_utc.strftime("%H-%M")
+    return {
+        "day_dir":            day_dir,
+        "canonical_relevant": os.path.join(JOBS_DIR, "Live_Jobs_Relevant.csv"),
+        "canonical_nr":       os.path.join(JOBS_DIR, "Live_Jobs_NonRelevant.csv"),
+        "run_relevant":       os.path.join(day_dir, f"{run_time}_relevant.csv"),
+        "run_nr":             os.path.join(day_dir, f"{run_time}_non_relevant.csv"),
+    }
+
+
+def load_seen_links(paths):
+    """
+    Load Apply Links from canonical CSVs only (not full history).
+    Keeps dedup fast regardless of how many historical files exist.
+    """
+    seen = set()
+    for key in ("canonical_relevant", "canonical_nr"):
+        fpath = paths[key]
+        if not os.path.exists(fpath):
+            continue
+        with open(fpath, encoding="utf-8-sig") as f:
+            for row in csv.DictReader(f):
+                link = (row.get("Apply Link") or "").strip()
+                if link:
+                    seen.add(link)
+    return seen
+
+
+def save_csv(filepath, jobs):
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    with open(filepath, "w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=OUTPUT_FIELDNAMES)
+        writer.writeheader()
+        for job in jobs:
+            writer.writerow({k: job.get(k, "") for k in OUTPUT_FIELDNAMES})
+
+
+# ===========================================================================
+# GOOGLE SHEETS HELPERS
+# ===========================================================================
+
+def get_sheets_client():
+    if not GSHEETS_AVAILABLE:
+        print("⚠️  gspread not installed. Run: pip install gspread google-auth-oauthlib")
+        return None
+
+    token_path = os.path.join(BASE_DIR, "token.json")
+    creds_path = os.path.join(BASE_DIR, "credentials.json")
+    creds = None
+
+    if os.path.exists(token_path):
+        creds = Credentials.from_authorized_user_file(token_path, GOOGLE_SCOPES)
+
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            # GUI Ubuntu: opens browser automatically for OAuth consent
+            flow = InstalledAppFlow.from_client_secrets_file(creds_path, GOOGLE_SCOPES)
+            creds = flow.run_local_server(port=0)
+
+        with open(token_path, "w", encoding="utf-8") as f:
+            f.write(creds.to_json())
+
+    return gspread.authorize(creds)
+
+
+def _row_key(row_values):
+    """Stable dedupe key: prefer Apply Link (col index 7), else full row."""
+    padded = list(row_values) + [""] * max(0, 8 - len(row_values))
+    link = str(padded[7] if len(padded) > 7 else "").strip()
+    return ("link", link) if link else ("row", tuple(str(x).strip() for x in padded[:8]))
+
+
+def upload_to_sheets(jobs, tab_name):
+    if not jobs:
+        return
+    client = get_sheets_client()
+    if not client:
+        return
 
     try:
-        options = webdriver.ChromeOptions()
-        profile_path = os.path.join(BASE_DIR, "chrome_linkedin_profile")
-        options.add_argument(f"user-data-dir={profile_path}")
+        wb = client.open_by_key(GOOGLE_SHEET_ID)
+    except Exception as e:
+        print(f"⚠️  Could not open Google Sheet: {e}")
+        return
 
-        driver = webdriver.Chrome(options=options)
-        driver.maximize_window()
-        wait = WebDriverWait(driver, WAIT_SECONDS)
+    try:
+        ws = wb.worksheet(tab_name)
+    except gspread.exceptions.WorksheetNotFound:
+        ws = wb.add_worksheet(title=tab_name, rows="10000", cols=str(len(SHEET_HEADER)))
+        ws.append_row(SHEET_HEADER)
 
+    if not ws.row_values(1):
+        ws.append_row(SHEET_HEADER)
+
+    # Fetch existing keys for dedup
+    all_values = ws.get_all_values()
+    existing_keys = {_row_key(r) for r in (all_values[1:] if len(all_values) > 1 else [])}
+
+    new_rows = []
+    for job in jobs:
+        row = [job.get(col, "") for col in SHEET_HEADER]
+        key = _row_key(row)
+        if key not in existing_keys:
+            new_rows.append(row)
+            existing_keys.add(key)
+
+    if new_rows:
+        ws.append_rows(new_rows, value_input_option="RAW")
+
+    print(f"   ☁️  Sheet '{tab_name}': +{len(new_rows)} new, {len(jobs)-len(new_rows)} skipped (dupes)")
+
+
+# ===========================================================================
+# MAIN SCRAPE LOGIC
+# ===========================================================================
+
+def build_url(keyword):
+    params = {"keywords": keyword, "location": LOCATION, "f_TPR": TIME_FILTER}
+    if JOB_TYPE_FILTER:
+        params["f_JT"] = JOB_TYPE_FILTER
+    return f"https://www.linkedin.com/jobs/search/?{urlencode(params)}"
+
+
+def scrape():
+    now_utc   = datetime.now(timezone.utc)
+    timestamp = now_utc.strftime(SCRAPED_DATE_FORMAT)
+    paths     = build_paths(now_utc)
+    seen      = load_seen_links(paths)
+
+    print(f"\n🚀 LinkedIn scrape started — {timestamp}")
+    print(f"   Dedup pool: {len(seen)} known links from canonical CSVs")
+    print(f"   Keywords  : {len(SEARCH_KEYWORDS)}")
+    print(f"   Max pages : {MAX_PAGES_PER_KEYWORD} per keyword\n")
+
+    driver = build_driver()
+    wait   = WebDriverWait(driver, WAIT_SECONDS)
+    fresh  = []          # jobs found in this run
+    run_seen = set()     # dedup within this run
+
+    try:
         driver.get("https://www.linkedin.com/login")
-        human_pause((2.2, 4.3), "initial login page load")
-        #print("\n🛑 ACTION REQUIRED:")
-        #print("1. Look at the Chrome window.")
-        #print("2. If you are not logged in, please log in manually right now.")
-        #print("3. Once you see your LinkedIn feed, come back here.")
-        #input("👉 PRESS [ENTER] HERE IN THE TERMINAL TO START SCRAPING...")
+        pause((2.5, 4.5), "login page load")
 
-        keywords_to_run = SEARCH_KEYWORDS[:]
-        random.shuffle(keywords_to_run)
+        # Check if already logged in via persistent profile
+        # LinkedIn redirects to /feed or /jobs when authenticated
+        if "linkedin.com/login" in driver.current_url or "authwall" in driver.current_url:
+            print("\n⚠️  Not logged in to LinkedIn.")
+            print("   The Chrome window is open. Please log in manually now.")
+            input("   👉 Press [ENTER] here once you are logged in and see your feed: ")
+            pause((1.5, 2.5), "post-login settle")
 
-        for i, keyword in enumerate(keywords_to_run):
-            if i > 0:
-                human_pause(ACTION_DELAY_RANGE_SECONDS, "between keyword searches")
+        keywords = SEARCH_KEYWORDS[:]
+        random.shuffle(keywords)
 
-            if i > 0 and i % KEYWORD_COOLDOWN_EVERY == 0:
-                human_pause(KEYWORD_COOLDOWN_RANGE_SECONDS, "periodic keyword cooldown")
+        for ki, keyword in enumerate(keywords):
+            if ki > 0:
+                pause(ACTION_DELAY, "between keywords")
+            if ki > 0 and ki % KEYWORD_COOLDOWN_EVERY == 0:
+                print(f"   ⏸  Cooldown after {ki} keywords...")
+                pause(KEYWORD_COOLDOWN_RANGE, "keyword cooldown")
 
-            print(f"\n🔍 Searching for: {keyword} ({TIME_FILTER_LABEL})...")
+            print(f"🔍 [{ki+1}/{len(keywords)}] {keyword!r}")
+            driver.get(build_url(keyword))
+            pause(PAGE_TRANSITION_DELAY, "results page load")
 
-            url = build_search_url(keyword)
-            driver.get(url)
-            human_pause(PAGE_TRANSITION_DELAY_RANGE_SECONDS, "search results page load")
-
-            # Load page 1 cards first (also triggers lazy list/pagination rendering).
             try:
                 wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, JOB_CARD_SELECTOR)))
             except TimeoutException:
-                print("   ⚠️ No job cards found on initial page load.")
+                print("   ⚠️  No job cards found — skipping keyword")
                 continue
 
-            page1_cards = load_all_jobs_for_keyword(driver, wait)
-            pagination_ready = ensure_pagination_loaded(driver)
-            debug_log(f"Pagination container ready: {pagination_ready}")
+            page1_cards = load_all_cards(driver, wait)
+            ensure_pagination_visible(driver)
+            max_pages = min(MAX_PAGES_PER_KEYWORD, get_max_pages(driver))
+            print(f"   Pages to scan: {max_pages}")
 
-            # Determine how many pages are available for this keyword and cap by config.
-            detected_pages = get_max_jobs_pages(driver)
-            total_pages_to_scan = max(1, min(MAX_PAGES_PER_KEYWORD, detected_pages))
-            print(f"   Pagination detected: {detected_pages} pages (scanning up to {total_pages_to_scan}).")
-            debug_log(f"Results summary: {get_results_summary_text(driver)}")
-
-            for page_num in range(1, total_pages_to_scan + 1):
+            for page_num in range(1, max_pages + 1):
                 if page_num == 1:
-                    job_cards = page1_cards
+                    cards = page1_cards
                 else:
-                    human_pause((0.7, 1.8), "before pagination move")
-                    moved = move_to_jobs_page(driver, page_num)
-                    if not moved:
-                        print(f"   ℹ️ Could not move to page {page_num}; stopping pagination for this keyword.")
+                    pause((0.8, 1.8), "before page nav")
+                    if not go_to_page(driver, page_num):
+                        print(f"   ⚠️  Could not reach page {page_num} — stopping")
                         break
-                    job_cards = load_all_jobs_for_keyword(driver, wait)
+                    cards = load_all_cards(driver, wait)
 
-                debug_log(f"Now on page state: {get_current_jobs_page(driver)} (target {page_num})")
-                print(f"   Found {len(job_cards)} recent jobs for {keyword} on page {page_num}.")
+                print(f"   Page {page_num}: {len(cards)} cards")
 
-                for idx, card in enumerate(job_cards, start=1):
+                for idx, card in enumerate(cards, 1):
                     try:
-                        title = first_text(card, TITLE_SELECTOR, "Unknown Title")
-                        company = first_text(card, COMPANY_SELECTOR, "Unknown Company")
+                        title    = first_text(card, TITLE_SELECTOR, "Unknown Title")
+                        company  = first_text(card, COMPANY_SELECTOR, "Unknown Company")
                         location = first_text(card, LOCATION_SELECTOR, "Germany")
-                        clean_link = first_href(card, LINK_SELECTOR)
+                        link     = first_href(card, LINK_SELECTOR)
 
-                        if company == "Unknown Company":
-                            print(f"   Company not found for title='{title}'")
-
-                        if not clean_link:
+                        if not link:
+                            continue
+                        if link in seen or link in run_seen:
                             continue
 
-                        if STRICT_GERMANY_LOCATION and not is_germany_location(location):
-                            continue
+                        desc         = fetch_description(driver, wait, card)
+                        relevance, score = classify_relevance(title, desc)
+                        skills       = extract_skills(desc)
+                        german       = classify_german(desc)
+                        zone         = classify_location_zone(location)
 
-                        if not should_keep_title(title):
-                            continue
-                        if clean_link in seen_links or clean_link in run_seen_links:
-                            continue
+                        job = {
+                            "Scraped Date":   timestamp,
+                            "Time Filter":    TIME_FILTER_LABEL,
+                            "Keyword":        keyword,
+                            "Job Title":      title,
+                            "Company":        company,
+                            "Location":       location,
+                            "Location_Zone":  zone,
+                            "Apply Link":     link,
+                            "Skills Found":   skills,
+                            "German_Level":   german,
+                            "Relevance_Score": score,
+                            "Relevance":      relevance,
+                        }
+                        fresh.append(job)
+                        run_seen.add(link)
 
-                        fresh_jobs.append({
-                            "Scraped Date": run_timestamp_display,
-                            "Time Filter": TIME_FILTER_LABEL,
-                            "Keyword": keyword,
-                            "Job Title": title,
-                            "Company": company,
-                            "Location": location,
-                            "Apply Link": clean_link,
-                        })
-                        run_seen_links.add(clean_link)
+                        if relevance != "non_relevant":
+                            debug(f"   ✅ {relevance} | {zone} | {title} @ {company}")
+
                     except (NoSuchElementException, StaleElementReferenceException, WebDriverException) as e:
-                        print(f"   Skipping card {idx} for '{keyword}' due to parse error: {e}")
+                        debug(f"   Card {idx} error: {e}")
 
     except WebDriverException as e:
-        print(f"Failed to launch or run Chrome. Error: {e}")
-        sys.exit(1)
+        print(f"❌ Chrome error: {e}")
     finally:
-        if driver is not None:
-            print("\n✅ Finished scraping. Closing browser...")
-            driver.quit()
+        driver.quit()
+        print("   Browser closed")
 
-    final_jobs = fresh_jobs + existing_jobs
-    final_jobs_with_relevance = with_relevance(final_jobs)
-    relevant_jobs_only = [job for job in final_jobs_with_relevance if job.get("Relevance") == "yes"]
-    non_relevant_jobs_only = [job for job in final_jobs_with_relevance if job.get("Relevance") == "no"]
+    # --- Split and sort ---
+    relevant     = [j for j in fresh if j["Relevance"] in ("high_relevant", "relevant")]
+    non_relevant = [j for j in fresh if j["Relevance"] == "non_relevant"]
 
-    print(f"💾 Found {len(fresh_jobs)} NEW jobs! Saving locally to {output_filename}...")
-    print(f"🧹 Expired rows removed (> {RETENTION_HOURS}h): {expired_count}")
-    print(f"🎯 Relevant IT jobs after filtering: {len(relevant_jobs_only)} / {len(final_jobs_with_relevance)}")
-    print(f"🗂️ Non-relevant jobs saved separately: {len(non_relevant_jobs_only)}")
-    
-    save_jobs_csv(output_filename, relevant_jobs_only)
+    relevant.sort(key=lambda j: (
+        ZONE_ORDER.get(j["Location_Zone"], 4),
+        -j.get("Relevance_Score", 0),
+    ))
 
-    if relevant_jobs_only:
-        # Push only NEW relevant jobs to Google Sheets.
-        fresh_jobs_with_relevance = with_relevance(fresh_jobs)
-        fresh_relevant_jobs = [job for job in fresh_jobs_with_relevance if job.get("Relevance") == "yes"]
-        upload_to_google_sheets(fresh_relevant_jobs, google_tab_name)
+    # --- Print summary ---
+    h  = sum(1 for j in relevant if j["Relevance"] == "high_relevant")
+    r  = sum(1 for j in relevant if j["Relevance"] == "relevant")
+    nr = len(non_relevant)
+    print(f"\n📊 Run summary")
+    print(f"   Total new jobs  : {len(fresh)}")
+    print(f"   High relevant   : {h}  (core skill match — apply these first)")
+    print(f"   Relevant        : {r}  (supporting skill match)")
+    print(f"   Non-relevant    : {nr}")
+    print(f"\n📍 Relevant — location breakdown:")
+    for zone in ["Zone1_Berlin", "Remote", "Zone2_Near", "Zone3_Stretch", "Other"]:
+        count = sum(1 for j in relevant if j["Location_Zone"] == zone)
+        if count:
+            print(f"   {zone:<18}: {count}")
+
+    if not fresh:
+        print("⚠️  No new jobs found this run.")
+        return
+
+    # --- Save CSVs ---
+    # Append fresh jobs to canonical files (read existing + merge + rewrite)
+    for canon_key, new_jobs in [
+        ("canonical_relevant", relevant),
+        ("canonical_nr",       non_relevant),
+    ]:
+        canon = paths[canon_key]
+        existing = []
+        if os.path.exists(canon):
+            with open(canon, encoding="utf-8-sig") as f:
+                existing = list(csv.DictReader(f))
+        merged = new_jobs + existing
+        save_csv(canon, merged)
+
+    # Also save timestamped run files
+    save_csv(paths["run_relevant"], relevant)
+    save_csv(paths["run_nr"],       non_relevant)
+    print(f"\n💾 CSVs saved → {paths['day_dir']}")
+
+    # --- Upload to Google Sheets ---
+    print("\n☁️  Uploading to Google Sheets...")
+    upload_to_sheets(relevant,     SHEET_RELEVANT)
+    upload_to_sheets(non_relevant, SHEET_NON_RELEVANT)
+
+    print(f"\n✅ Done. {h + r} relevant jobs ready to review.")
+    if h + r >= 25:
+        print("🎯 Daily target of 25 reached!")
     else:
-        print("⚠️ No IT-related jobs found in this run.")
+        print(f"⏳ {25 - h - r} more needed to hit today's target of 25.")
 
-    save_jobs_csv(non_relevant_output_filename, non_relevant_jobs_only)
 
-if __name__ == '__main__':
-    scrape_linkedin_jobs()
+# ===========================================================================
+# UPLOAD-ONLY MODE — push existing CSVs without scraping
+# ===========================================================================
+
+def upload_only():
+    now_utc = datetime.now(timezone.utc)
+    paths   = build_paths(now_utc)
+
+    for csv_path, tab_name in [
+        (paths["canonical_relevant"], SHEET_RELEVANT),
+        (paths["canonical_nr"],       SHEET_NON_RELEVANT),
+    ]:
+        if not os.path.exists(csv_path):
+            print(f"⚠️  File not found: {csv_path}")
+            continue
+        jobs = []
+        with open(csv_path, encoding="utf-8-sig") as f:
+            for row in csv.DictReader(f):
+                # Backfill Location_Zone for old rows
+                if not row.get("Location_Zone"):
+                    row["Location_Zone"] = classify_location_zone(row.get("Location", ""))
+                jobs.append(row)
+        print(f"☁️  Uploading {len(jobs)} rows from {os.path.basename(csv_path)} → '{tab_name}'")
+        upload_to_sheets(jobs, tab_name)
+
+
+# ===========================================================================
+# ENTRY POINT
+# ===========================================================================
+
+if __name__ == "__main__":
+    if UPLOAD_ONLY_MODE:
+        upload_only()
+    else:
+        scrape()
