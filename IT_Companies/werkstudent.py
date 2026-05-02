@@ -69,7 +69,7 @@ LOCATION              = "Berlin, Germany"
 TIME_FILTER           = "r86400"        # past 24 hours — keeps results fresh
 TIME_FILTER_LABEL     = "Past 24 Hours"
 MAX_PAGES_PER_KEYWORD = 3               # freshest jobs are on page 1; 3 is enough
-JOB_TYPE_FILTER       = ""             # "" = all types; "P" = part-time only
+JOB_TYPE_FILTER       = "P,I"          # P = Part-time, I = Internship (excludes Full-time)
 
 # --- Timing (anti-bot) ---
 WAIT_SECONDS          = 15
@@ -117,8 +117,19 @@ COMPANY_SELECTOR = (
     "h4.base-search-card__subtitle, "
     "span.job-card-container__primary-description, "
     ".job-card-container__company-name, "
-    ".artdeco-entity-lockup__subtitle span[aria-hidden='true'], "
-    ".job-card-list__company-name"
+    "a.job-card-container__company-name, "
+    ".artdeco-entity-lockup__subtitle span, "
+    ".job-card-list__company-name, "
+    ".job-card-container__company-name a"
+)
+# Selectors for company name in the right-side detail panel (after clicking a card)
+COMPANY_DETAIL_SELECTORS = (
+    ".jobs-unified-top-card__company-name",
+    "a.jobs-unified-top-card__company-name",
+    "span.jobs-unified-top-card__company-name",
+    ".job-details-jobs-unified-top-card__company-name",
+    ".job-details-jobs-unified-top-card__company-name a",
+    ".jobs-details-top-card__company-url",
 )
 LOCATION_SELECTOR = (
     "span.job-search-card__location, "
@@ -434,7 +445,7 @@ def load_all_cards(driver, wait):
 
 
 def fetch_description(driver, wait, card):
-    """Click a job card to open the detail panel, return description text."""
+    """Click a job card to open the detail panel, return (description, company_from_panel)."""
     try:
         links = card.find_elements(By.CSS_SELECTOR, LINK_SELECTOR)
         target = links[0] if links else card
@@ -442,9 +453,23 @@ def fetch_description(driver, wait, card):
         pause(CLICK_PAUSE)
         driver.execute_script("arguments[0].click();", target)
     except WebDriverException:
-        return ""
+        return "", ""
 
     pause((0.4, 0.9))
+
+    # Extract company from detail panel — more reliable than job card selectors
+    company_panel = ""
+    for sel in COMPANY_DETAIL_SELECTORS:
+        try:
+            for el in driver.find_elements(By.CSS_SELECTOR, sel):
+                t = (el.text or "").strip()
+                if t:
+                    company_panel = t
+                    break
+            if company_panel:
+                break
+        except WebDriverException:
+            continue
 
     for sel in DESCRIPTION_SELECTORS:
         try:
@@ -452,10 +477,10 @@ def fetch_description(driver, wait, card):
             for el in driver.find_elements(By.CSS_SELECTOR, sel):
                 text = (el.text or "").strip()
                 if text:
-                    return text
+                    return text, company_panel
         except (TimeoutException, WebDriverException):
             continue
-    return ""
+    return "", company_panel
 
 
 def get_page_number(driver):
@@ -811,7 +836,9 @@ def scrape():
                         if link in seen or link in run_seen:
                             continue
 
-                        desc         = fetch_description(driver, wait, card)
+                        desc, company_panel = fetch_description(driver, wait, card)
+                        if company in ("Unknown Company", "") and company_panel:
+                            company = company_panel
                         relevance, score = classify_relevance(title, desc)
                         skills       = extract_skills(desc)
                         german       = classify_german(desc)
