@@ -33,9 +33,13 @@ UPLOAD_ONLY_MODE = False
 SEARCH_KEYWORDS = [
     "working student",
     "werkstudent",
+    "working student data engineer Berlin",
+    "werkstudent python berlin",
+    "werkstudent SQL analytics berlin",
+    "working student analytics berlin english"
 ]
 
-LOCATION = "Germany"
+LOCATION = "Berlin, Germany"
 JOB_TYPE_FILTER = ""  # Optional LinkedIn filter, e.g. "P" (part-time) or "P,I"
 TIME_FILTER = "r86400"
 TIME_FILTER_LABEL = "Past 24 Hours"
