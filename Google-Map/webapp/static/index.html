@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MapLeads Console</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<aside>
+  <div class="brand"><div class="logo">◎</div>MapLeads</div>
+  <nav id="nav">
+    <div class="navsec">Workspace</div>
+    <button data-v="dash" class="on">▦ Dashboard</button>
+    <button data-v="search">⌕ Search Builder</button>
+    <button data-v="run">▶ Live Run <span class="ct" id="navRun">idle</span></button>
+    <button data-v="leads">☰ Leads <span class="ct" id="navLeads">0</span></button>
+    <button data-v="outreach">✉ Outreach</button>
+    <div class="navsec">Configuration</div>
+    <button data-v="filters">⛉ Email Filters</button>
+    <button data-v="crawl">⚙ Crawler & Browser</button>
+    <button data-v="providers">⇄ Data Sources / APIs</button>
+    <button data-v="presets">★ Presets</button>
+  </nav>
+  <div class="side-foot">API: <span class="mono">/api/v1</span> <span id="apiDot" style="color:var(--acc2)">●</span><br><a href="/docs" target="_blank">OpenAPI docs ↗</a></div>
+</aside>
+
+<main>
+<header>
+  <h1 id="title">Dashboard</h1><div class="sp"></div>
+  <div class="status"><span class="dot idle" id="sdot"></span><span id="stext">No job running</span></div>
+  <button class="btn" id="theme" title="Toggle theme">◐</button>
+  <button class="btn p" data-go="search">+ New Scrape</button>
+</header>
+<div class="content">
+
+<!-- DASHBOARD -->
+<section class="view on" id="v-dash">
+  <div class="grid g4">
+    <div class="card kpi"><div class="l">Listings scanned</div><div class="v" id="sListings">–</div><div class="d" id="sLeads"></div></div>
+    <div class="card kpi"><div class="l">Websites tracked</div><div class="v" id="sWebsites">–</div><div class="d" id="sWithEmail"></div></div>
+    <div class="card kpi"><div class="l">Valid emails</div><div class="v" id="sKept">–</div><div class="d" id="sFiltered"></div></div>
+    <div class="card kpi"><div class="l">Emails sent</div><div class="v" id="sSent">–</div><div class="d" id="sReplied"></div></div>
+  </div>
+  <div class="grid g21" style="margin-top:16px">
+    <div class="card"><h3>Leads added per day <small>last 14 days</small></h3><svg id="chart" viewBox="0 0 600 180" style="width:100%;height:180px"></svg></div>
+    <div class="card"><h3>Funnel</h3><div id="funnel"></div></div>
+  </div>
+  <div class="grid g2" style="margin-top:16px">
+    <div class="card"><h3>Recent jobs <small><a href="#" data-go="run">open run →</a></small></h3>
+      <table><thead><tr><th>Search</th><th>Source</th><th>Emails</th><th>Status</th></tr></thead><tbody id="jobs"></tbody></table>
+    </div>
+    <div class="card"><h3>Top districts by emails <small><button class="btn" id="importBtn" style="padding:3px 9px">⤒ Import tracked_*.txt</button></small></h3><div id="districts"></div></div>
+  </div>
+</section>
+
+<!-- SEARCH BUILDER -->
+<section class="view" id="v-search">
+  <div class="grid g21">
+    <div>
+      <div class="card">
+        <h3>1 · What to search</h3>
+        <label class="f">Keywords (each keyword × each location = one query)</label>
+        <div class="chips" data-chips="search.keywords"></div>
+        <div class="row sm muted" style="margin-top:6px">Suggestions:
+          <span class="tag sug">AI startups</span><span class="tag sug">data analytics companies</span><span class="tag sug">IT consulting</span><span class="tag sug">fintech</span></div>
+        <label class="f">Skip companies whose name contains</label>
+        <div class="chips" data-chips="search.exclude_names"></div>
+      </div>
+      <div class="card" style="margin-top:16px">
+        <h3>2 · Where</h3>
+        <div class="grid g2">
+          <div><label class="f">City / region</label><input type="text" data-k="search.city"></div>
+          <div><label class="f">&nbsp;</label><button class="btn" id="suggestDistricts">⌖ Load districts from OpenStreetMap</button></div>
+        </div>
+        <label class="f">Locations / districts (empty = whole city)</label>
+        <div class="chips" data-chips="search.locations"></div>
+        <div class="grid g3">
+          <div><label class="f">Zoom level <span class="rv" data-out="search.zoom"></span></label><input type="range" min="10" max="18" data-k="search.zoom" data-num></div>
+          <div><label class="f">Maps language</label><select data-k="search.language"><option value="de">de</option><option value="en">en</option></select></div>
+          <div><label class="f">Max listings / query</label><input type="number" min="1" max="500" data-k="search.max_results_per_query" data-num></div>
+        </div>
+      </div>
+      <div class="card" style="margin-top:16px">
+        <h3>3 · Listing filters</h3>
+        <div class="grid g2">
+          <div><label class="f">Min rating <span class="rv" data-out="search.min_rating"></span></label><input type="range" min="0" max="5" step=".5" data-k="search.min_rating" data-num></div>
+          <div><label class="f">Min reviews</label><input type="number" min="0" data-k="search.min_reviews" data-num></div>
+        </div>
+        <div class="grid g2" style="margin-top:6px">
+          <div>
+            <div class="tog"><span>Skip sponsored listings<small>sponsored · gesponsert · anzeige</small></span><label class="sw"><input type="checkbox" data-k="search.skip_sponsored"><i></i></label></div>
+            <div class="tog"><span>Skip listings without website</span><label class="sw"><input type="checkbox" data-k="search.require_website"><i></i></label></div>
+          </div>
+          <div>
+            <div class="tog"><span>Skip websites already tracked</span><label class="sw"><input type="checkbox" data-k="search.skip_tracked_websites"><i></i></label></div>
+            <div class="tog"><span>Skip permanently closed</span><label class="sw"><input type="checkbox" data-k="search.skip_closed"><i></i></label></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="card">
+        <h3>Run summary</h3>
+        <div class="tog"><span>Queries generated</span><b id="qcount">—</b></div>
+        <div class="tog"><span>Data source</span><select style="width:auto" id="srcSel"></select></div>
+        <div class="tog"><span>Est. duration</span><b id="eta">—</b></div>
+        <div class="tog"><span>Est. API cost</span><b id="cost">—</b></div>
+        <div class="tog"><span>Crawl websites for emails</span><label class="sw"><input type="checkbox" data-k="crawl.enabled"><i></i></label></div>
+        <label class="f">Job name (optional)</label><input type="text" id="jobName" placeholder="auto">
+        <div class="row" style="margin-top:14px"><button class="btn g" style="flex:1;justify-content:center" id="startBtn">▶ Start scrape</button><button class="btn" id="savePreset">★ Save preset</button></div>
+        <div class="row sm muted" style="margin-top:8px">Search settings are saved as your defaults when you start.</div>
+        <details style="margin-top:12px"><summary class="sm muted" style="cursor:pointer">Queries</summary><div class="mono sm muted" id="qlist" style="max-height:200px;overflow:auto"></div></details>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- LIVE RUN -->
+<section class="view" id="v-run">
+  <div class="card" style="margin-bottom:16px">
+    <div class="row"><select id="jobPick" class="jobpick"></select><span class="tag" id="runTag">idle</span><div style="flex:1"></div>
+      <button class="btn" id="pauseBtn">❚❚ Pause</button><button class="btn" id="resumeBtn">▶ Resume</button><button class="btn r" id="stopBtn">■ Stop</button><button class="btn" id="leadsOfJob">☰ Leads</button><button class="btn r" id="delJob" title="Delete job">🗑</button></div>
+    <div class="bar" style="margin-top:12px"><i id="pbar" style="width:0"></i></div>
+    <div class="row sm muted" style="margin-top:8px;justify-content:space-between"><span id="ptext">0 / 0 queries</span><span id="perr" class="err"></span></div>
+  </div>
+  <div class="grid g4" style="margin-bottom:16px">
+    <div class="card kpi"><div class="l">Listings seen</div><div class="v" id="k1">0</div></div>
+    <div class="card kpi"><div class="l">Websites</div><div class="v" id="k2">0</div></div>
+    <div class="card kpi"><div class="l">Emails kept</div><div class="v" id="k3" style="color:var(--acc2)">0</div></div>
+    <div class="card kpi"><div class="l">Emails filtered</div><div class="v" id="k4" style="color:var(--warn)">0</div></div>
+  </div>
+  <div class="grid g2">
+    <div class="card"><h3>Query coverage</h3><div class="map" id="map"></div></div>
+    <div class="card"><h3>Live log <small><label><input type="checkbox" id="autoscroll" checked> autoscroll</label></small></h3><div class="log mono" id="log"></div></div>
+  </div>
+</section>
+
+<!-- LEADS -->
+<section class="view" id="v-leads">
+  <div class="toolbar">
+    <input type="text" placeholder="Search company, email, domain…" id="q" style="width:260px">
+    <select id="fDistrict"><option value="">All districts</option></select>
+    <select id="fStatus"><option value="">Any status</option><option>new</option><option>queued</option><option>sent</option><option>replied</option><option>bounced</option><option>rejected</option></select>
+    <select id="fType"><option value="">Any email type</option><option>jobs/hr</option><option>personal</option><option>generic</option></select>
+    <label class="sm row"><input type="checkbox" id="fEmail"> has email</label>
+    <span class="tag" id="fJob" hidden></span>
+    <div style="flex:1"></div>
+    <select id="bulk" style="width:auto"><option value="">Bulk action…</option><option value="status:replied">Mark replied</option><option value="status:rejected">Mark rejected</option><option value="status:new">Mark new</option><option value="exclude">Exclude</option><option value="delete">Delete</option></select>
+    <button class="btn" id="expCsv">⤓ CSV</button>
+    <button class="btn" id="expJson">⤓ JSON</button>
+    <button class="btn p" id="queueSel">✉ Email selected</button>
+  </div>
+  <div class="card" style="padding:0;overflow:auto">
+    <table><thead><tr><th><input type="checkbox" id="all"></th><th data-s="name">Company</th><th data-s="district">District</th><th>Best email</th><th>Type</th><th data-s="rating">Rating</th><th>Found on</th><th data-s="status">Status</th><th></th></tr></thead><tbody id="leadRows"></tbody></table>
+  </div>
+  <div class="pager"><span class="sm muted" id="leadCount"></span><button class="btn" id="prev">‹</button><button class="btn" id="next">›</button></div>
+</section>
+
+<!-- OUTREACH -->
+<section class="view" id="v-outreach">
+  <div class="tabs" data-tabs><button class="on" data-t="o1">Composer</button><button data-t="o2">Campaign settings</button><button data-t="o3">SMTP account</button><button data-t="o4">Campaigns & sent log</button></div>
+  <div data-pane="o1" class="grid g2">
+    <div class="card">
+      <h3>Template <small class="row"><select style="width:auto" id="tplSel"></select><button class="btn" id="tplNew" style="padding:4px 9px">+</button><button class="btn r" id="tplDel" style="padding:4px 9px">🗑</button></small></h3>
+      <label class="f">Name</label><input type="text" id="tplName">
+      <label class="f">Subject</label><input type="text" id="subj">
+      <label class="f">Body · variables: <span class="mono">{company} {district} {website} {first_name} {first_name_sp} {sender_name}</span></label>
+      <textarea id="body" style="min-height:220px"></textarea>
+      <label class="f">Attachments (files in data/attachments)</label>
+      <div class="chips" id="attChips"></div>
+      <div class="row" style="margin-top:8px"><input type="file" id="attFile" class="sm"><button class="btn" id="tplSave">💾 Save template</button></div>
+    </div>
+    <div class="card">
+      <h3>Preview <small><select style="width:auto" id="pvLead"></select></small></h3>
+      <div class="preview" id="preview"></div>
+      <label class="f">Recipients</label>
+      <div class="sm" id="recips">Select leads in the Leads tab and press “Email selected”, or:</div>
+      <div class="row" style="margin-top:6px"><button class="btn" id="pickAllNew">Use all new leads with email</button></div>
+      <div class="tog"><span>Dry run (log only, nothing is sent)</span><label class="sw"><input type="checkbox" data-k="outreach.dry_run"><i></i></label></div>
+      <div class="row" style="margin-top:14px"><button class="btn" id="sendTest">Send test to me</button><div style="flex:1"></div><button class="btn p" id="launch">Launch campaign</button></div>
+    </div>
+  </div>
+  <div data-pane="o2" class="grid g2" hidden>
+    <div class="card"><h3>Pacing</h3>
+      <div class="grid g2"><div><label class="f">Delay min (s)</label><input type="number" data-k="outreach.delay_min" data-num></div><div><label class="f">Delay max (s)</label><input type="number" data-k="outreach.delay_max" data-num></div></div>
+      <label class="f">Daily cap</label><input type="number" data-k="outreach.daily_cap" data-num>
+      <label class="f">Send window (local time)</label><div class="row"><input type="text" data-k="outreach.window_start" style="width:90px"> → <input type="text" data-k="outreach.window_end" style="width:90px"></div>
+      <div class="tog"><span>Weekdays only</span><label class="sw"><input type="checkbox" data-k="outreach.weekdays_only"><i></i></label></div>
+    </div>
+    <div class="card"><h3>Safety</h3>
+      <div class="tog"><span>One email per domain<small>picks by Email Filters → priority</small></span><label class="sw"><input type="checkbox" data-k="outreach.one_per_domain"><i></i></label></div>
+      <div class="tog"><span>Verify with Hunter before send<small>needs HUNTER_KEY</small></span><label class="sw"><input type="checkbox" data-k="outreach.verify_hunter"><i></i></label></div>
+      <p class="sm muted">Addresses already in the sent log are always skipped. SMTP reconnects automatically if the connection drops.</p>
+      <button class="btn p" data-save="outreach">Save</button>
+    </div>
+  </div>
+  <div data-pane="o3" class="card" hidden style="max-width:560px">
+    <h3>SMTP account</h3>
+    <div class="grid g2"><div><label class="f">SMTP host</label><input type="text" data-k="outreach.smtp_host"></div><div><label class="f">Port (SSL)</label><input type="number" data-k="outreach.smtp_port" data-num></div></div>
+    <label class="f">Sender name</label><input type="text" data-k="outreach.sender_name">
+    <label class="f">Sender email <span class="sm" id="secSender"></span></label><input type="text" id="secEmail" placeholder="leave empty to keep current" autocomplete="off">
+    <label class="f">App password <span class="sm" id="secPass"></span> — stored in Google-Map/.env, never in git</label><input type="password" id="secPwd" placeholder="leave empty to keep current" autocomplete="new-password">
+    <div class="row" style="margin-top:14px"><button class="btn p" id="saveSmtp">Save</button><button class="btn" id="testSmtp">Test login</button></div>
+  </div>
+  <div data-pane="o4" hidden>
+    <div class="card" style="padding:0;margin-bottom:16px"><table><thead><tr><th>#</th><th>Template</th><th>Mode</th><th>Progress</th><th>Status</th><th></th></tr></thead><tbody id="campRows"></tbody></table></div>
+    <div class="card" style="padding:0"><table><thead><tr><th>Time (UTC)</th><th>Company</th><th>Recipient</th><th>Template</th><th>Result</th></tr></thead><tbody id="sentRows"></tbody></table></div>
+  </div>
+</section>
+
+<!-- EMAIL FILTERS -->
+<section class="view" id="v-filters">
+  <div class="grid g21">
+    <div class="card">
+      <h3>Filter layers <small>blocked counts from stored emails</small></h3>
+      <div id="layers"></div>
+      <div class="row" style="margin-top:12px"><button class="btn p" id="saveLayers">Save</button><button class="btn" id="reapply">↻ Re-apply rules to stored emails</button><button class="btn" data-reset="filters">Reset defaults</button></div>
+    </div>
+    <div>
+      <div class="card"><h3>Live tester</h3>
+        <input type="text" id="tester" placeholder="paste an email, e.g. noreply@company.de" class="mono">
+        <div id="testRes"></div>
+        <label class="f">Batch test (one per line)</label><textarea id="batch" class="mono sm">jobs@datalab.berlin
+dpo@company.com
+sdk@0.1.26-site.compat.min.js
+karriere@kiwi-ai.de
+test123@startup.io</textarea>
+        <button class="btn" style="margin-top:8px" id="batchBtn">Run batch</button><div id="batchRes" class="sm" style="margin-top:8px"></div>
+      </div>
+      <div class="card" style="margin-top:16px"><h3>Email priority</h3>
+        <p class="sm muted" style="margin-top:0">When a site has several emails, the first local part matching this order wins:</p>
+        <div class="chips" data-chips="filters.priority"></div>
+        <button class="btn" style="margin-top:8px" data-save="filters">Save</button>
+      </div>
+    </div>
+  </div>
+  <div class="card" style="margin-top:16px"><h3>Edit lists <small><select style="width:auto" id="listSel"></select></small></h3><div class="chips" id="listChips"></div>
+    <button class="btn p" style="margin-top:10px" data-save="filters">Save lists</button></div>
+</section>
+
+<!-- CRAWLER -->
+<section class="view" id="v-crawl">
+  <div class="grid g3">
+    <div class="card"><h3>Website crawl</h3>
+      <label class="f">Max relevant pages / site <span class="rv" data-out="crawl.max_relevant_pages"></span></label><input type="range" min="1" max="25" data-k="crawl.max_relevant_pages" data-num>
+      <label class="f">Request timeout (s)</label><input type="number" data-k="crawl.timeout" data-num>
+      <div class="tog"><span>Retry without SSL verify on TLS error</span><label class="sw"><input type="checkbox" data-k="crawl.ssl_fallback"><i></i></label></div>
+      <div class="tog"><span>Stay on same domain</span><label class="sw"><input type="checkbox" data-k="crawl.same_domain_only"><i></i></label></div>
+      <div class="tog"><span>Decode [at]/(dot) obfuscation</span><label class="sw"><input type="checkbox" data-k="crawl.decode_obfuscation"><i></i></label></div>
+      <div class="tog"><span>Stop after first page with emails<small>faster, finds fewer</small></span><label class="sw"><input type="checkbox" data-k="crawl.stop_after_first_hit"><i></i></label></div>
+      <div class="tog"><span>Rotate user-agents<small>from useragents.txt</small></span><label class="sw"><input type="checkbox" data-k="crawl.rotate_user_agents"><i></i></label></div>
+    </div>
+    <div class="card"><h3>Relevant page keywords</h3>
+      <label class="f">Visit links containing</label><div class="chips" data-chips="crawl.keywords"></div>
+      <label class="f">Never visit paths containing</label><div class="chips" data-chips="crawl.never_visit"></div>
+      <label class="f">Proxies (http://user:pass@host:port)</label><div class="chips" data-chips="crawl.proxies"></div>
+    </div>
+    <div class="card"><h3>Browser (Selenium source)</h3>
+      <label class="f">Mode</label><select data-k="browser.mode"><option value="attach">Attach to my Chrome (debug port)</option><option value="headless">Launch headless Chrome</option><option value="visible">Launch visible Chrome</option></select>
+      <label class="f">Chrome path</label><input type="text" class="mono sm" data-k="browser.chrome_path">
+      <label class="f">Debug port</label><input type="number" data-k="browser.debug_port" data-num>
+      <label class="f">Profile dir</label><input type="text" class="mono sm" data-k="browser.profile_dir">
+      <div class="grid g2"><div><label class="f">Delay min (s)</label><input type="number" step=".5" data-k="browser.delay_min" data-num></div><div><label class="f">Delay max (s)</label><input type="number" step=".5" data-k="browser.delay_max" data-num></div></div>
+    </div>
+  </div>
+  <div class="row" style="margin-top:16px"><button class="btn p" data-save="crawl,browser">Save configuration</button><button class="btn" data-reset="crawl">Reset crawl defaults</button><button class="btn" data-reset="browser">Reset browser defaults</button></div>
+</section>
+
+<!-- PROVIDERS -->
+<section class="view" id="v-providers">
+  <p class="muted" style="margin-top:0">Discover sources find listings (pick one per job in Search Builder). Enrich sources add emails. Keys are written to <span class="mono">Google-Map/.env</span> and never shown again.</p>
+  <div class="grid g3" id="provs"></div>
+</section>
+
+<!-- PRESETS -->
+<section class="view" id="v-presets"><div class="grid g3" id="presets"></div></section>
+
+</div>
+</main>
+
+<div class="drawer" id="drawer"></div>
+<div class="toast" id="toast"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

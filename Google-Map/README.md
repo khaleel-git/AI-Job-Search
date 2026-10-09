@@ -18,6 +18,19 @@ It uses **Selenium** to interact with Google Maps and **Requests + BeautifulSoup
 
 ---
 
+## Web UI (MapLeads)
+
+Prefer a browser over the terminal? `webapp/` is a local web app for this scraper. It has a search builder, live job monitor, leads table with export, editable email filters, outreach campaigns and optional API data sources (Google Places, SerpAPI, Outscraper, Hunter).
+
+```bash
+pip install -r webapp/requirements.txt
+python -m webapp
+```
+
+See [webapp/README.md](webapp/README.md).
+
+---
+
 ## Requirements
 
 - Python 3.8+
